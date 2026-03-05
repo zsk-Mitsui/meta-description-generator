@@ -99,4 +99,33 @@ if uploaded_file and api_key:
             for i, url in enumerate(urls):
                 title, body = scrape_page_content(url, basic_user, basic_pw)
                 if title not in ["取得失敗", "認証失敗"]:
-                    desc = generate_description(api_key, best_model, url
+                    desc = generate_description(api_key, best_model, url, title, body, target_company)
+                else:
+                    desc = f"読み込めませんでした: {body}"
+                
+                results.append({"URL": url, "タイトル": title, "生成結果": desc})
+                progress_bar.progress((i + 1) / len(urls))
+                time.sleep(1)
+            
+            st.success("✅ 全ページの処理が完了しました！")
+            
+            # HTMLテーブル生成
+            html_rows = ""
+            for r in results:
+                html_rows += f'<tr><td><a href="{r["URL"]}" target="_blank">{r["URL"]}</a></td><td>{r["タイトル"]}</td><td>{r["生成結果"]}</td></tr>'
+            
+            table_html = f"""
+            <style>
+                table {{ width:100%; border-collapse: collapse; font-size:14px; margin-top:20px; }}
+                th {{ background:#007bff; color:white; padding:10px; text-align:left; }}
+                td {{ border:1px solid #ddd; padding:10px; vertical-align:top; }}
+                a {{ color:#007bff; text-decoration:none; }}
+            </style>
+            <table><tr><th>URL</th><th>タイトル</th><th>生成結果</th></tr>{html_rows}</table>
+            """
+            st.write(table_html, unsafe_allow_html=True)
+            
+            full_html = f"<html><head><meta charset='UTF-8'></head><body><h1>SEO Report</h1>{table_html}</body></html>"
+            st.download_button("レポートをHTMLで保存", full_html, "seo_meta_report.html", "text/html")
+    else:
+        st.error("URLが見つかりません。")
