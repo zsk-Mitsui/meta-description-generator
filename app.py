@@ -11,7 +11,7 @@ import re
 st.set_page_config(page_title="プロ仕様 SEO Meta Generator", layout="wide")
 
 st.title("🚀 プロ仕様 SEO Meta Generator")
-st.write("2026年最新のAPI環境に最適化済み。会社名統一・リンク付きレポート・認証対応。")
+st.write("文字数カウント、会社名統一、リンク付きレポート、認証対応のフル装備版です。")
 
 # --- サイドバー設定 ---
 with st.sidebar:
@@ -20,7 +20,7 @@ with st.sidebar:
     api_key = st.secrets.get("GEMINI_API_KEY") or st.text_input("Gemini API Keyを入力", type="password")
     
     st.divider()
-    # 【復活！】?アイコン付きの会社名入力
+    # 会社名入力（？アイコン付き）
     target_company = st.text_input(
         "会社名・ブランド名（任意）", 
         placeholder="例：株式会社サンプル",
@@ -59,7 +59,6 @@ def scrape_page_content(url, user=None, pw=None):
     except Exception as e: return "取得失敗", str(e)
 
 def get_best_model_name(api_key):
-    """利用可能なモデルの中から最適なものを探す（2026年仕様）"""
     try:
         genai.configure(api_key=api_key)
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
@@ -74,7 +73,7 @@ def generate_description(api_key, model_name, url, title, body, company):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name)
         c_rule = f"・社名は「{company}」で統一すること。" if company else ""
-        prompt = f"""SEOのプロとして、以下のページのmeta descriptionを120〜150文字の日本語で作成してください。最後は句点「。」で終わらせ、注釈は一切含めないこと。{c_rule}
+        prompt = f"""SEOのプロとして、以下のページのmeta descriptionを120〜145文字程度の日本語で作成してください。最後は句点「。」で終わらせ、注釈は一切含めないこと。{c_rule}
         URL: {url} / タイトル: {title} / 内容: {body}"""
         response = model.generate_content(prompt)
         text = response.text.strip()
@@ -90,7 +89,6 @@ if uploaded_file and api_key:
     if urls:
         st.success(f"{len(urls)} 件のURLを読み込みました。")
         best_model = get_best_model_name(api_key)
-        st.info(f"使用モデル: {best_model}")
         
         if st.button("全ページの生成を開始する"):
             results = []
@@ -103,29 +101,53 @@ if uploaded_file and api_key:
                 else:
                     desc = f"読み込めませんでした: {body}"
                 
-                results.append({"URL": url, "タイトル": title, "生成結果": desc})
+                # 文字数を計算
+                char_count = len(desc) if "読み込めませんでした" not in desc else 0
+                
+                results.append({
+                    "URL": url, 
+                    "タイトル": title, 
+                    "生成結果": desc,
+                    "文字数": char_count
+                })
                 progress_bar.progress((i + 1) / len(urls))
                 time.sleep(1)
             
             st.success("✅ 全ページの処理が完了しました！")
             
-            # HTMLテーブル生成
+            # HTMLテーブル生成（文字数カラムを追加）
             html_rows = ""
             for r in results:
-                html_rows += f'<tr><td><a href="{r["URL"]}" target="_blank">{r["URL"]}</a></td><td>{r["タイトル"]}</td><td>{r["生成結果"]}</td></tr>'
+                html_rows += f"""
+                <tr>
+                    <td><a href="{r['URL']}" target="_blank">{r['URL']}</a></td>
+                    <td>{r['タイトル']}</td>
+                    <td>{r['生成結果']}</td>
+                    <td style="text-align:center;">{r['文字数']}</td>
+                </tr>
+                """
             
             table_html = f"""
             <style>
                 table {{ width:100%; border-collapse: collapse; font-size:14px; margin-top:20px; }}
                 th {{ background:#007bff; color:white; padding:10px; text-align:left; }}
                 td {{ border:1px solid #ddd; padding:10px; vertical-align:top; }}
+                tr:nth-child(even) {{ background-color: #f9f9f9; }}
                 a {{ color:#007bff; text-decoration:none; }}
             </style>
-            <table><tr><th>URL</th><th>タイトル</th><th>生成結果</th></tr>{html_rows}</table>
+            <table>
+                <tr>
+                    <th>URL</th>
+                    <th>タイトル</th>
+                    <th>生成結果</th>
+                    <th style="width:60px;">文字数</th>
+                </tr>
+                {html_rows}
+            </table>
             """
             st.write(table_html, unsafe_allow_html=True)
             
-            full_html = f"<html><head><meta charset='UTF-8'></head><body><h1>SEO Report</h1>{table_html}</body></html>"
-            st.download_button("レポートをHTMLで保存", full_html, "seo_meta_report.html", "text/html")
+            full_html = f"<html><head><meta charset='UTF-8'></head><body><h1>SEO Meta Description Report</h1>{table_html}</body></html>"
+            st.download_button("レポート（HTML）を保存", full_html, "seo_meta_report.html", "text/html")
     else:
         st.error("URLが見つかりません。")
