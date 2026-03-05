@@ -8,20 +8,17 @@ import time
 import re
 
 # --- 基本設定 ---
-st.set_page_config(page_title="プロ仕様 SEO Meta Generator", layout="wide")
+st.set_page_config(page_title="SEO Meta Description Generator", layout="wide")
 
-st.title("🚀 プロ仕様 SEO Meta Description 生成アプリ")
-st.write("最新のAPI通信規格(v1)を使用して生成します。")
+st.title("🚀 プロ仕様 SEO Meta Generator")
+st.write("2026年最新のAPI環境に合わせて、最適なモデルを自動選択して生成します。")
 
 # --- サイドバー設定 ---
 with st.sidebar:
     st.header("⚙️ 設定")
-    # APIキー取得
     api_key = st.secrets.get("GEMINI_API_KEY") or st.text_input("Gemini API Keyを入力", type="password")
-    
     st.divider()
     target_company = st.text_input("会社名（任意）", placeholder="例：株式会社サンプル")
-
     st.divider()
     st.header("🔒 ベーシック認証")
     basic_user = st.text_input("ユーザー名")
@@ -32,142 +29,61 @@ with st.sidebar:
 def parse_sitemap(xml_content):
     try:
         soup = BeautifulSoup(xml_content, 'xml')
-        urls = [loc.text for loc in soup.find_all('loc')]
-        return urls
-    except Exception as e:
-        return []
+        return [loc.text for loc in soup.find_all('loc')]
+    except Exception: return []
 
 def scrape_page_content(url, user=None, pw=None):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"}
     auth = HTTPBasicAuth(user, pw) if user and pw else None
-    
     try:
         res = requests.get(url, headers=headers, auth=auth, timeout=15)
         res.encoding = res.apparent_encoding
-        
-        if res.status_code == 401:
-            return "認証失敗", "認証情報が正しくありません。"
-        if res.status_code != 200:
-            return "取得失敗", f"HTTP {res.status_code}"
+        if res.status_code == 401: return "認証失敗", "ID/PWが違います"
+        if res.status_code != 200: return "取得失敗", f"HTTP {res.status_code}"
         
         soup = BeautifulSoup(res.text, 'html.parser')
         title = soup.title.string if soup.title else "タイトルなし"
-        for s in soup(["script", "style", "nav", "footer", "header"]):
-            s.decompose()
+        # 不要タグ削除
+        for s in soup(["script", "style", "nav", "footer"]): s.decompose()
         body = soup.get_text(separator=' ', strip=True)[:1500]
+        
+        # プレースホルダー（{企業名}など）が含まれる場合の警告
+        if "{" in title and "}" in title:
+            title = f"【要確認】{title}"
+            
         return title, body
-    except Exception as e:
-        return "取得失敗", str(e)
+    except Exception as e: return "取得失敗", str(e)
 
-def generate_description(api_key, url, title, body, company):
-    """
-    【修正版】APIバージョンを安定版に固定して呼び出し
-    """
+def get_best_model_name(api_key):
+    """利用可能なモデルの中から最適なものを探す"""
     try:
-        # APIの設定
         genai.configure(api_key=api_key)
+        # 利用可能なモデルを取得
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
-        # モデル名の指定をシンプルに。SDKに最新版を選ばせる
-        model = genai.GenerativeModel(model_name='gemini-1.5-flash')
+        # 2026年に推奨されるモデルの優先順位
+        priorities = [
+            "models/gemini-1.5-flash",
+            "models/gemini-1.5-flash-latest",
+            "models/gemini-pro",
+            "models/gemini-1.0-pro"
+        ]
         
-        c_rule = f"・社名は必ず「{company}」と表記してください。" if company else ""
-        prompt = f"""
-        あなたはSEO専門家です。以下の内容から、120〜150文字のmeta descriptionを日本語で作成してください。
-        最後は必ず句点「。」で完結させ、余計な注釈（「(150文字)」など）は絶対に含めないでください。
-        {c_rule}
-        
-        URL: {url}
-        タイトル: {title}
-        内容: {body}
-        """
-        
-        # 生成実行
-        response = model.generate_content(prompt)
-        
-        # AIが付けてしまう「注釈」を強力に除去
-        text = response.text.strip()
-        text = re.sub(r'[\(（].*?文字[\)）]', '', text) # (150文字) などを削除
-        text = re.sub(r'^.*?[:：]', '', text) # 「説明：」などを削除
-        
-        return text.strip()
-    except Exception as e:
-        # 万が一失敗した場合は、別名のモデル ID でリトライ
-        try:
-            model = genai.GenerativeModel(model_name='gemini-pro')
-            response = model.generate_content(prompt)
-            return response.text.strip()
-        except:
-            return f"AIエラー: モデルが見つかりません。APIキーの権限を確認してください。({str(e)})"
+        for p in priorities:
+            if p in available_models:
+                return p
+        return available_models[0] if available_models else None
+    except Exception:
+        return "models/gemini-1.5-flash" # フォールバック
 
-# --- メイン処理 ---
-
-uploaded_file = st.file_uploader("sitemap.xml をアップロード", type="xml")
-
-if uploaded_file and api_key:
-    urls = parse_sitemap(uploaded_file)
-    if urls:
-        st.success(f"URLを {len(urls)} 件確認しました。")
+def generate_description(api_key, model_name, url, title, body, company):
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(model_name)
         
-        if st.button("生成を開始する"):
-            results = []
-            progress_bar = st.progress(0)
-            
-            for i, url in enumerate(urls):
-                # ページ取得
-                title, body = scrape_page_content(url, basic_user, basic_pw)
-                
-                # AI生成
-                if title not in ["取得失敗", "認証失敗"]:
-                    desc = generate_description(api_key, url, title, body, target_company)
-                else:
-                    desc = f"読み込み失敗: {body}"
-                
-                results.append({
-                    "URL": url,
-                    "タイトル": title,
-                    "生成ディスクリプション": desc,
-                    "文字数": len(desc) if "エラー" not in desc else 0
-                })
-                
-                progress_bar.progress((i + 1) / len(urls))
-                time.sleep(1)
-            
-            # 結果表示用のDataFrame
-            df_display = pd.DataFrame(results)
-            
-            # URLをリンク化したHTMLテーブルを表示
-            st.write("### 生成結果")
-            html_table_output = "<table><tr><th>URL</th><th>タイトル</th><th>生成ディスクリプション</th><th>文字数</th></tr>"
-            for row in results:
-                html_table_output += f'<tr><td><a href="{row["URL"]}" target="_blank">{row["URL"]}</a></td><td>{row["タイトル"]}</td><td>{row["生成ディスクリプション"]}</td><td>{row["文字数"]}</td></tr>'
-            html_table_output += "</table>"
-            
-            st.markdown("""
-                <style>
-                table { width: 100%; border-collapse: collapse; }
-                th { background-color: #f0f2f6; padding: 10px; border: 1px solid #ddd; text-align: left; }
-                td { padding: 10px; border: 1px solid #ddd; font-size: 14px; }
-                a { color: #007bff; text-decoration: none; }
-                </style>
-                """, unsafe_allow_html=True)
-            st.write(html_table_output, unsafe_allow_html=True)
-            
-            # ダウンロード用HTML
-            html_report = f"""
-            <html><head><meta charset='UTF-8'><style>
-                body {{ font-family: sans-serif; padding: 20px; }}
-                table {{ border-collapse: collapse; width: 100%; }}
-                th {{ background: #007bff; color: white; padding: 10px; text-align: left; }}
-                td {{ padding: 10px; border-bottom: 1px solid #eee; font-size: 14px; }}
-                a {{ color: #007bff; }}
-            </style></head>
-            <body>
-                <h1>SEO Meta Description Report</h1>
-                {html_table_output}
-            </body></html>
-            """
-            st.download_button("レポートを保存", html_report, "seo_report.html", "text/html")
-    else:
-        st.error("サイトマップからURLを読み取れませんでした。")
-elif not api_key:
-    st.warning("APIキーを入力してください。")
+        c_rule = f"・社名は「{company}」で統一すること。" if company else ""
+        prompt = f"""SEOのプロとして、以下のページのmeta descriptionを120〜150文字の日本語で作成してください。
+        最後は句点「。」で終わらせ、注釈は一切含めないこと。{c_rule}
+        URL: {url} / タイトル: {title} / 内容: {body}"""
+        
+        response = model
