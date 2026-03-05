@@ -8,10 +8,38 @@ import time
 import re
 
 # --- 基本設定 ---
-st.set_page_config(page_title="プロ仕様 SEO Meta Generator", layout="wide")
+st.set_page_config(page_title="社内専用 SEO Meta Generator", layout="wide")
+
+# --- 1. ログインチェック機能 ---
+def check_password():
+    """パスワードが正しいかチェックする。正しい場合はTrueを返す。"""
+    
+    # Secretsにパスワードが設定されていない場合のデフォルト（後でSecretsに設定してください）
+    # Secretsに APP_PASSWORD = "xxxx" と書くとそこを見に行きます
+    target_password = st.secrets.get("APP_PASSWORD", "admin123") # デフォルトは admin123
+
+    if "password_correct" not in st.session_state:
+        # 初回表示
+        st.title("🔒 社内専用ツール：ログイン")
+        password = st.text_input("アクセスパスワードを入力してください", type="password")
+        if st.button("ログイン"):
+            if password == target_password:
+                st.session_state["password_correct"] = True
+                st.rerun() # 画面をリロードして中身を表示
+            else:
+                st.error("パスワードが違います。管理者へお問い合わせください。")
+        return False
+    else:
+        return True
+
+# ログインしていない場合はここで処理を止める
+if not check_password():
+    st.stop()
+
+# --- ログイン成功後：ここからメインアプリ ---
 
 st.title("🚀 プロ仕様 SEO Meta Description 生成アプリ")
-st.write("アプリ上でも、ダウンロードしたレポート上でも、ワンクリックでコピーが可能です。")
+st.write("社内専用モードで起動中。")
 
 # --- サイドバー設定 ---
 with st.sidebar:
@@ -21,12 +49,17 @@ with st.sidebar:
     target_company = st.text_input(
         "会社名・ブランド名（任意）", 
         placeholder="例：株式会社サンプル",
-        help="ここに入力すると、AIが全ページでこの名称を正確に使用します。空欄の場合はページ内容から自動判別します。"
+        help="ここに入力すると、AIが全ページでこの名称を正確に使用します。"
     )
     st.divider()
     st.header("🔒 ベーシック認証")
     basic_user = st.text_input("ユーザー名")
     basic_pw = st.text_input("パスワード", type="password")
+    
+    # ログアウトボタン
+    if st.button("ログアウト"):
+        del st.session_state["password_correct"]
+        st.rerun()
 
 # --- 関数定義 ---
 
@@ -48,7 +81,6 @@ def scrape_page_content(url, user=None, pw=None):
         title = soup.title.string if soup.title else "タイトルなし"
         for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
         body = soup.get_text(separator=' ', strip=True)[:1500]
-        if "{" in title and "}" in title: title = f"【要確認】{title}"
         return title, body
     except Exception as e: return "取得失敗", str(e)
 
@@ -102,21 +134,19 @@ if uploaded_file and api_key:
             
             st.success("✅ 全ページの処理が完了しました！")
             
-            # --- アプリ上の表示 ---
             df = pd.DataFrame(results)
             st.dataframe(df, column_config={"URL": st.column_config.LinkColumn("URL")}, hide_index=True, use_container_width=True)
             
             st.divider()
-            st.write("### 📋 コピペ用リスト (アプリ上)")
+            st.write("### 📋 コピペ用リスト")
             for i, res in enumerate(results):
                 with st.container(border=True):
                     st.markdown(f"**[{i+1}] {res['タイトル']}**")
                     st.code(res['生成結果'], language=None)
             
-            # --- ダウンロード用HTML作成 (JavaScriptコピー機能付き) ---
+            # --- HTMLレポート作成 ---
             html_rows = ""
             for r in results:
-                # JSでエラーにならないようシングルクォートをエスケープ
                 safe_desc = r['生成結果'].replace("'", "\\'")
                 html_rows += f"""
                 <tr>
@@ -133,43 +163,32 @@ if uploaded_file and api_key:
             
             full_html = f"""
             <html><head><meta charset='UTF-8'>
-            <title>SEO Meta Report</title>
             <style>
-                body {{ font-family: sans-serif; padding: 30px; color: #333; line-height: 1.6; }}
+                body {{ font-family: sans-serif; padding: 30px; color: #333; }}
                 table {{ width: 100%; border-collapse: collapse; margin-top: 20px; table-layout: fixed; }}
                 th {{ background: #007bff; color: white; padding: 12px; text-align: left; }}
                 td {{ border: 1px solid #ddd; padding: 12px; vertical-align: top; word-wrap: break-word; }}
                 tr:nth-child(even) {{ background-color: #f9f9f9; }}
-                .copy-btn {{ 
-                    margin-top: 8px; padding: 5px 10px; cursor: pointer; 
-                    background: #28a745; color: white; border: none; border-radius: 3px; font-size: 12px;
-                }}
-                .copy-btn:active {{ background: #218838; }}
+                .copy-btn {{ margin-top: 8px; padding: 5px 10px; cursor: pointer; background: #28a745; color: white; border: none; border-radius: 3px; font-size: 12px; }}
                 a {{ color: #007bff; text-decoration: none; }}
             </style>
             <script>
                 function copyText(id, btn) {{
                     var text = document.getElementById(id).innerText;
                     navigator.clipboard.writeText(text).then(function() {{
-                        var originalText = btn.innerText;
                         btn.innerText = "✅ コピー完了！";
-                        btn.style.background = "#6c757d";
-                        setTimeout(function() {{
-                            btn.innerText = originalText;
-                            btn.style.background = "#28a745";
-                        }}, 2000);
+                        setTimeout(function() {{ btn.innerText = "コピー"; }}, 2000);
                     }});
                 }}
             </script>
             </head><body>
                 <h1>SEO Meta Description Report</h1>
-                <p>生成日時: {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
                 <table>
                     <tr><th style="width:20%;">URL</th><th style="width:20%;">タイトル</th><th style="width:50%;">生成結果</th><th style="width:10%;">文字数</th></tr>
                     {html_rows}
                 </table>
             </body></html>
             """
-            st.download_button("コピー機能付きHTMLを保存", full_html, "seo_meta_report.html", "text/html")
+            st.download_button("レポートを保存", full_html, "seo_meta_report.html", "text/html")
     else:
         st.error("URLが見つかりません。")
