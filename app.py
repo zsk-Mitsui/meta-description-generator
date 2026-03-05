@@ -136,4 +136,14 @@ if uploaded_file:
             <body>
                 <h1>SEO Meta Description レポート</h1>
                 <p>生成日: {time.strftime('%Y-%m-%d')}</p>
-                {html_
+                {html_table}
+            </body>
+            </html>
+            """
+            
+            st.download_button(
+                label="レポート（HTML）をダウンロード",
+                data=html_report,
+                file_name="meta_report.html",
+                mime="text/html"
+            )
