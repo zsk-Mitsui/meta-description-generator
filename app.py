@@ -86,4 +86,62 @@ def generate_description(api_key, model_name, url, title, body, company):
         最後は句点「。」で終わらせ、注釈は一切含めないこと。{c_rule}
         URL: {url} / タイトル: {title} / 内容: {body}"""
         
-        response = model
+        response = model.generate_content(prompt)
+        text = response.text.strip()
+        # ゴミ取り
+        text = re.sub(r'[\(（].*?文字[\)）]', '', text)
+        return text
+    except Exception as e:
+        return f"エラー: {str(e)}"
+
+# --- メイン処理 ---
+uploaded_file = st.file_uploader("sitemap.xml をアップロード", type="xml")
+
+if uploaded_file and api_key:
+    urls = parse_sitemap(uploaded_file)
+    if urls:
+        st.success(f"{len(urls)} 件のURLを読み込みました。")
+        
+        # モデルを自動選定
+        best_model = get_best_model_name(api_key)
+        st.info(f"使用モデル: {best_model}")
+        
+        if st.button("生成を開始する"):
+            results = []
+            progress_bar = st.progress(0)
+            
+            for i, url in enumerate(urls):
+                title, body = scrape_page_content(url, basic_user, basic_pw)
+                
+                if title not in ["取得失敗", "認証失敗"]:
+                    desc = generate_description(api_key, best_model, url, title, body, target_company)
+                else:
+                    desc = f"読み込めませんでした: {body}"
+                
+                results.append({"URL": url, "タイトル": title, "生成結果": desc})
+                progress_bar.progress((i + 1) / len(urls))
+                time.sleep(1)
+            
+            df = pd.DataFrame(results)
+            st.write("### 生成結果一覧")
+            
+            # HTMLテーブル生成（リンク付き）
+            html_rows = ""
+            for r in results:
+                html_rows += f'<tr><td><a href="{r["URL"]}" target="_blank">{r["URL"]}</a></td><td>{r["タイトル"]}</td><td>{r["生成結果"]}</td></tr>'
+            
+            table_html = f"""
+            <style>
+                table {{ width:100%; border-collapse: collapse; font-size:14px; }}
+                th {{ background:#007bff; color:white; padding:10px; text-align:left; }}
+                td {{ border:1px solid #ddd; padding:10px; }}
+            </style>
+            <table><tr><th>URL</th><th>タイトル</th><th>生成結果</th></tr>{html_rows}</table>
+            """
+            st.write(table_html, unsafe_allow_html=True)
+            
+            # レポート保存用
+            full_html = f"<html><head><meta charset='UTF-8'></head><body><h1>SEO Report</h1>{table_html}</body></html>"
+            st.download_button("レポートを保存", full_html, "seo_report.html", "text/html")
+    else:
+        st.error("URLが見つかりません。")
