@@ -10,17 +10,16 @@ import re
 # --- 基本設定 ---
 st.set_page_config(page_title="プロ仕様 SEO Meta Generator", layout="wide")
 
-st.title("🚀 プロ仕様 SEO Meta Generator")
-st.write("文字数カウント、会社名統一、リンク付きレポート、認証対応のフル装備版です。")
+st.title("🚀 プロ仕様 SEO Meta Description 生成アプリ")
+st.write("UIを改善しました。タグを表示せず、綺麗なリンクと表で結果を確認できます。")
 
 # --- サイドバー設定 ---
 with st.sidebar:
     st.header("⚙️ 設定")
-    # APIキー取得
     api_key = st.secrets.get("GEMINI_API_KEY") or st.text_input("Gemini API Keyを入力", type="password")
     
     st.divider()
-    # 会社名入力（？アイコン付き）
+    # 会社名入力（？アイコン復活＆プレースホルダー修正）
     target_company = st.text_input(
         "会社名・ブランド名（任意）", 
         placeholder="例：株式会社サンプル",
@@ -107,7 +106,7 @@ if uploaded_file and api_key:
                 results.append({
                     "URL": url, 
                     "タイトル": title, 
-                    "生成結果": desc,
+                    "生成ディスクリプション": desc,
                     "文字数": char_count
                 })
                 progress_bar.progress((i + 1) / len(urls))
@@ -115,39 +114,52 @@ if uploaded_file and api_key:
             
             st.success("✅ 全ページの処理が完了しました！")
             
-            # HTMLテーブル生成（文字数カラムを追加）
+            # --- UI表示部分 ---
+            df = pd.DataFrame(results)
+            st.write("### 生成結果一覧")
+            
+            # リンク列をURLとして認識させ、タグを表示させない設定
+            st.dataframe(
+                df,
+                column_config={
+                    "URL": st.column_config.LinkColumn("URL (クリックで移動)"),
+                    "文字数": st.column_config.NumberColumn("文字数", format="%d 字")
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+            
+            # --- ダウンロード用HTML作成 ---
             html_rows = ""
             for r in results:
                 html_rows += f"""
                 <tr>
                     <td><a href="{r['URL']}" target="_blank">{r['URL']}</a></td>
                     <td>{r['タイトル']}</td>
-                    <td>{r['生成結果']}</td>
+                    <td>{r['生成ディスクリプション']}</td>
                     <td style="text-align:center;">{r['文字数']}</td>
                 </tr>
                 """
             
-            table_html = f"""
+            full_html = f"""
+            <html><head><meta charset='UTF-8'>
             <style>
-                table {{ width:100%; border-collapse: collapse; font-size:14px; margin-top:20px; }}
+                body {{ font-family: sans-serif; padding: 20px; }}
+                table {{ width:100%; border-collapse: collapse; font-size:14px; }}
                 th {{ background:#007bff; color:white; padding:10px; text-align:left; }}
                 td {{ border:1px solid #ddd; padding:10px; vertical-align:top; }}
                 tr:nth-child(even) {{ background-color: #f9f9f9; }}
                 a {{ color:#007bff; text-decoration:none; }}
             </style>
+            </head><body>
+            <h1>SEO Meta Description Report</h1>
             <table>
-                <tr>
-                    <th>URL</th>
-                    <th>タイトル</th>
-                    <th>生成結果</th>
-                    <th style="width:60px;">文字数</th>
-                </tr>
+                <tr><th>URL</th><th>タイトル</th><th>生成結果</th><th style="width:60px;">文字数</th></tr>
                 {html_rows}
             </table>
+            </body></html>
             """
-            st.write(table_html, unsafe_allow_html=True)
             
-            full_html = f"<html><head><meta charset='UTF-8'></head><body><h1>SEO Meta Description Report</h1>{table_html}</body></html>"
             st.download_button("レポート（HTML）を保存", full_html, "seo_meta_report.html", "text/html")
     else:
         st.error("URLが見つかりません。")
