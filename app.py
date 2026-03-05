@@ -141,4 +141,35 @@ if uploaded_file and api_key:
                 td {{ border: 1px solid #ddd; padding: 12px; vertical-align: top; word-wrap: break-word; }}
                 tr:nth-child(even) {{ background-color: #f9f9f9; }}
                 .copy-btn {{ 
-                    margin-top: 8px; padding: 5px
+                    margin-top: 8px; padding: 5px 10px; cursor: pointer; 
+                    background: #28a745; color: white; border: none; border-radius: 3px; font-size: 12px;
+                }}
+                .copy-btn:active {{ background: #218838; }}
+                a {{ color: #007bff; text-decoration: none; }}
+            </style>
+            <script>
+                function copyText(id, btn) {{
+                    var text = document.getElementById(id).innerText;
+                    navigator.clipboard.writeText(text).then(function() {{
+                        var originalText = btn.innerText;
+                        btn.innerText = "✅ コピー完了！";
+                        btn.style.background = "#6c757d";
+                        setTimeout(function() {{
+                            btn.innerText = originalText;
+                            btn.style.background = "#28a745";
+                        }}, 2000);
+                    }});
+                }}
+            </script>
+            </head><body>
+                <h1>SEO Meta Description Report</h1>
+                <p>生成日時: {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
+                <table>
+                    <tr><th style="width:20%;">URL</th><th style="width:20%;">タイトル</th><th style="width:50%;">生成結果</th><th style="width:10%;">文字数</th></tr>
+                    {html_rows}
+                </table>
+            </body></html>
+            """
+            st.download_button("コピー機能付きHTMLを保存", full_html, "seo_meta_report.html", "text/html")
+    else:
+        st.error("URLが見つかりません。")
