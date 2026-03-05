@@ -12,11 +12,16 @@ st.set_page_config(page_title="AI Meta Description Generator", layout="wide")
 st.title("🚀 SEO Meta Description 生成アプリ")
 st.write("sitemap.xmlを読み込んで、AIが各ページのメタディスクリプションを自動作成します。")
 
-# サイドバーでAPIキーを設定
-with st.sidebar:
-    st.header("Settings")
-    api_key = st.text_input("Gemini API Keyを入力してください", type="password")
-    st.info("APIキーは [Google AI Studio](https://aistudio.google.com/app/apikey) で取得できます。")
+# 1. Secretsに保存されているか確認
+if "GEMINI_API_KEY" in st.secrets:
+    api_key = st.secrets["GEMINI_API_KEY"]
+else:
+    # 2. Secretsになければ、サイドバーで手動入力を促す
+    with st.sidebar:
+        st.header("Settings")
+        api_key = st.text_input("Gemini API Keyを入力してください", type="password")
+        if not api_key:
+            st.info("StreamlitのSecretsにGEMINI_API_KEYを設定すると、この入力をスキップできます。")
 
 # --- 関数定義 ---
 
@@ -141,4 +146,5 @@ if uploaded_file and api_key:
             mime="text/html"
         )
 elif not api_key:
+
     st.warning("左側のサイドバーにAPIキーを入力してください。")
