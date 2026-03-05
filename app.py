@@ -13,12 +13,9 @@ st.set_page_config(page_title="プロ仕様 SEO Meta Generator", layout="wide")
 # --- 1. ログインチェック機能 ---
 def check_password():
     """パスワードが正しいかチェックする。"""
-    
-    # Secretsからパスワードを取得（未設定時はデフォルトを使用）
     target_password = st.secrets.get("APP_PASSWORD", "admin123")
 
     if "password_correct" not in st.session_state:
-        # --- ログイン画面のタイトルを分かりやすく修正 ---
         st.title("🚀 プロ仕様 SEO Meta Description 生成アプリ")
         st.subheader("🔒 社内専用ツール：ログインが必要です")
         
@@ -45,9 +42,13 @@ st.caption("社内専用ツール：ログイン済み")
 # --- サイドバー設定 ---
 with st.sidebar:
     st.header("⚙️ 設定")
+    # APIキー設定
     api_key = st.secrets.get("GEMINI_API_KEY") or st.text_input("Gemini API Keyを入力", type="password")
     
     st.divider()
+    
+    # 会社情報
+    st.header("🏢 会社情報")
     target_company = st.text_input(
         "会社名・ブランド名（任意）", 
         placeholder="例：株式会社サンプル",
@@ -55,11 +56,17 @@ with st.sidebar:
     )
 
     st.divider()
-    st.header("🔒 ベーシック認証")
-    basic_user = st.text_input("ユーザー名")
-    basic_pw = st.text_input("パスワード", type="password")
     
-    if st.button("ログアウト"):
+    # ベーシック認証セクション
+    st.header("🔒 ベーシック認証")
+    st.caption("テストサイト等の認証情報")
+    basic_user = st.text_input("ユーザー名", key="basic_user_input")
+    basic_pw = st.text_input("パスワード", type="password", key="basic_pw_input")
+    
+    # --- ログアウトボタンを一番下へ配置 ---
+    st.markdown("<br><br><br>", unsafe_allow_html=True) # 余白を追加
+    st.divider()
+    if st.button("🚪 アプリからログアウト", use_container_width=True):
         del st.session_state["password_correct"]
         st.rerun()
 
@@ -136,7 +143,6 @@ if uploaded_file and api_key:
             
             st.success("✅ 全ページの処理が完了しました！")
             
-            # --- アプリ上の表示 ---
             df = pd.DataFrame(results)
             st.dataframe(df, column_config={"URL": st.column_config.LinkColumn("URL")}, hide_index=True, use_container_width=True)
             
@@ -147,7 +153,7 @@ if uploaded_file and api_key:
                     st.markdown(f"**[{i+1}] {res['タイトル']}**")
                     st.code(res['生成結果'], language=None)
             
-            # --- HTMLレポート作成 (JSコピー機能付き) ---
+            # --- HTMLレポート作成 ---
             html_rows = ""
             for idx, r in enumerate(results):
                 html_rows += f"""
@@ -172,26 +178,4 @@ if uploaded_file and api_key:
                 th {{ background: #007bff; color: white; padding: 12px; text-align: left; }}
                 td {{ border: 1px solid #ddd; padding: 12px; vertical-align: top; word-wrap: break-word; }}
                 tr:nth-child(even) {{ background-color: #f9f9f9; }}
-                .copy-btn {{ margin-top: 8px; padding: 5px 10px; cursor: pointer; background: #28a745; color: white; border: none; border-radius: 3px; font-size: 12px; }}
-                a {{ color: #007bff; text-decoration: none; }}
-            </style>
-            <script>
-                function copyText(id, btn) {{
-                    var text = document.getElementById(id).innerText;
-                    navigator.clipboard.writeText(text).then(function() {{
-                        btn.innerText = "✅ コピー完了！";
-                        setTimeout(function() {{ btn.innerText = "コピー"; }}, 2000);
-                    }});
-                }}
-            </script>
-            </head><body>
-                <h1>SEO Meta Description Report</h1>
-                <table>
-                    <tr><th style="width:20%;">URL</th><th style="width:20%;">タイトル</th><th style="width:50%;">生成結果</th><th style="width:10%;">文字数</th></tr>
-                    {html_rows}
-                </table>
-            </body></html>
-            """
-            st.download_button("レポート（HTML）を保存", full_html, "seo_meta_report.html", "text/html")
-    else:
-        st.error("URLが見つかりません。")
+                .copy-btn {{ margin-top: 8px; padding
