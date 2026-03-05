@@ -8,55 +8,57 @@ import time
 import re
 
 # --- 基本設定 ---
-st.set_page_config(page_title="社内専用 SEO Meta Generator", layout="wide")
+st.set_page_config(page_title="プロ仕様 SEO Meta Generator", layout="wide")
 
 # --- 1. ログインチェック機能 ---
 def check_password():
-    """パスワードが正しいかチェックする。正しい場合はTrueを返す。"""
+    """パスワードが正しいかチェックする。"""
     
-    # Secretsにパスワードが設定されていない場合のデフォルト（後でSecretsに設定してください）
-    # Secretsに APP_PASSWORD = "xxxx" と書くとそこを見に行きます
-    target_password = st.secrets.get("APP_PASSWORD", "admin123") # デフォルトは admin123
+    # Secretsからパスワードを取得（未設定時はデフォルトを使用）
+    target_password = st.secrets.get("APP_PASSWORD", "admin123")
 
     if "password_correct" not in st.session_state:
-        # 初回表示
-        st.title("🔒 社内専用ツール：ログイン")
+        # --- ログイン画面のタイトルを分かりやすく修正 ---
+        st.title("🚀 プロ仕様 SEO Meta Description 生成アプリ")
+        st.subheader("🔒 社内専用ツール：ログインが必要です")
+        
         password = st.text_input("アクセスパスワードを入力してください", type="password")
         if st.button("ログイン"):
             if password == target_password:
                 st.session_state["password_correct"] = True
-                st.rerun() # 画面をリロードして中身を表示
+                st.rerun()
             else:
                 st.error("パスワードが違います。管理者へお問い合わせください。")
         return False
     else:
         return True
 
-# ログインしていない場合はここで処理を止める
+# ログインしていない場合はここで停止
 if not check_password():
     st.stop()
 
-# --- ログイン成功後：ここからメインアプリ ---
+# --- ログイン成功後：メインアプリ画面 ---
 
 st.title("🚀 プロ仕様 SEO Meta Description 生成アプリ")
-st.write("社内専用モードで起動中。")
+st.caption("社内専用ツール：ログイン済み")
 
 # --- サイドバー設定 ---
 with st.sidebar:
     st.header("⚙️ 設定")
     api_key = st.secrets.get("GEMINI_API_KEY") or st.text_input("Gemini API Keyを入力", type="password")
+    
     st.divider()
     target_company = st.text_input(
         "会社名・ブランド名（任意）", 
         placeholder="例：株式会社サンプル",
         help="ここに入力すると、AIが全ページでこの名称を正確に使用します。"
     )
+
     st.divider()
     st.header("🔒 ベーシック認証")
     basic_user = st.text_input("ユーザー名")
     basic_pw = st.text_input("パスワード", type="password")
     
-    # ログアウトボタン
     if st.button("ログアウト"):
         del st.session_state["password_correct"]
         st.rerun()
@@ -134,6 +136,7 @@ if uploaded_file and api_key:
             
             st.success("✅ 全ページの処理が完了しました！")
             
+            # --- アプリ上の表示 ---
             df = pd.DataFrame(results)
             st.dataframe(df, column_config={"URL": st.column_config.LinkColumn("URL")}, hide_index=True, use_container_width=True)
             
@@ -144,18 +147,17 @@ if uploaded_file and api_key:
                     st.markdown(f"**[{i+1}] {res['タイトル']}**")
                     st.code(res['生成結果'], language=None)
             
-            # --- HTMLレポート作成 ---
+            # --- HTMLレポート作成 (JSコピー機能付き) ---
             html_rows = ""
-            for r in results:
-                safe_desc = r['生成結果'].replace("'", "\\'")
+            for idx, r in enumerate(results):
                 html_rows += f"""
                 <tr>
                     <td><a href="{r['URL']}" target="_blank">{r['URL']}</a></td>
                     <td>{r['タイトル']}</td>
                     <td>
-                        <span id="desc-{results.index(r)}">{r['生成結果']}</span>
+                        <span id="desc-{idx}">{r['生成結果']}</span>
                         <br>
-                        <button class="copy-btn" onclick="copyText('desc-{results.index(r)}', this)">コピー</button>
+                        <button class="copy-btn" onclick="copyText('desc-{idx}', this)">コピー</button>
                     </td>
                     <td style="text-align:center;">{r['文字数']}</td>
                 </tr>
@@ -163,6 +165,7 @@ if uploaded_file and api_key:
             
             full_html = f"""
             <html><head><meta charset='UTF-8'>
+            <title>SEO Meta Report</title>
             <style>
                 body {{ font-family: sans-serif; padding: 30px; color: #333; }}
                 table {{ width: 100%; border-collapse: collapse; margin-top: 20px; table-layout: fixed; }}
@@ -189,6 +192,6 @@ if uploaded_file and api_key:
                 </table>
             </body></html>
             """
-            st.download_button("レポートを保存", full_html, "seo_meta_report.html", "text/html")
+            st.download_button("レポート（HTML）を保存", full_html, "seo_meta_report.html", "text/html")
     else:
         st.error("URLが見つかりません。")
