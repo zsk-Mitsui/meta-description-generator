@@ -178,4 +178,26 @@ if uploaded_file and api_key:
                 th {{ background: #007bff; color: white; padding: 12px; text-align: left; }}
                 td {{ border: 1px solid #ddd; padding: 12px; vertical-align: top; word-wrap: break-word; }}
                 tr:nth-child(even) {{ background-color: #f9f9f9; }}
-                .copy-btn {{ margin-top: 8px; padding
+                .copy-btn {{ margin-top: 8px; padding: 5px 10px; cursor: pointer; background: #28a745; color: white; border: none; border-radius: 3px; font-size: 12px; }}
+                a {{ color: #007bff; text-decoration: none; }}
+            </style>
+            <script>
+                function copyText(id, btn) {{
+                    var text = document.getElementById(id).innerText;
+                    navigator.clipboard.writeText(text).then(function() {{
+                        btn.innerText = "✅ コピー完了！";
+                        setTimeout(function() {{ btn.innerText = "コピー"; }}, 2000);
+                    }});
+                }}
+            </script>
+            </head><body>
+                <h1>SEO Meta Description Report</h1>
+                <table>
+                    <tr><th style="width:20%;">URL</th><th style="width:20%;">タイトル</th><th style="width:50%;">生成結果</th><th style="width:10%;">文字数</th></tr>
+                    {html_rows}
+                </table>
+            </body></html>
+            """
+            st.download_button("レポートを保存", full_html, "seo_meta_report.html", "text/html")
+    else:
+        st.error("URLが見つかりません。")
