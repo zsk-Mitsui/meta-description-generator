@@ -120,4 +120,54 @@ if uploaded_file and api_key:
                 if title not in ["取得失敗", "認証失敗"]:
                     desc = generate_description(api_key, url, title, body, target_company)
                 else:
-                    desc = f"読み
+                    desc = f"読み込み失敗: {body}"
+                
+                results.append({
+                    "URL": url,
+                    "タイトル": title,
+                    "生成ディスクリプション": desc,
+                    "文字数": len(desc) if "エラー" not in desc else 0
+                })
+                
+                progress_bar.progress((i + 1) / len(urls))
+                time.sleep(1)
+            
+            # 結果表示用のDataFrame
+            df_display = pd.DataFrame(results)
+            
+            # URLをリンク化したHTMLテーブルを表示
+            st.write("### 生成結果")
+            html_table_output = "<table><tr><th>URL</th><th>タイトル</th><th>生成ディスクリプション</th><th>文字数</th></tr>"
+            for row in results:
+                html_table_output += f'<tr><td><a href="{row["URL"]}" target="_blank">{row["URL"]}</a></td><td>{row["タイトル"]}</td><td>{row["生成ディスクリプション"]}</td><td>{row["文字数"]}</td></tr>'
+            html_table_output += "</table>"
+            
+            st.markdown("""
+                <style>
+                table { width: 100%; border-collapse: collapse; }
+                th { background-color: #f0f2f6; padding: 10px; border: 1px solid #ddd; text-align: left; }
+                td { padding: 10px; border: 1px solid #ddd; font-size: 14px; }
+                a { color: #007bff; text-decoration: none; }
+                </style>
+                """, unsafe_allow_html=True)
+            st.write(html_table_output, unsafe_allow_html=True)
+            
+            # ダウンロード用HTML
+            html_report = f"""
+            <html><head><meta charset='UTF-8'><style>
+                body {{ font-family: sans-serif; padding: 20px; }}
+                table {{ border-collapse: collapse; width: 100%; }}
+                th {{ background: #007bff; color: white; padding: 10px; text-align: left; }}
+                td {{ padding: 10px; border-bottom: 1px solid #eee; font-size: 14px; }}
+                a {{ color: #007bff; }}
+            </style></head>
+            <body>
+                <h1>SEO Meta Description Report</h1>
+                {html_table_output}
+            </body></html>
+            """
+            st.download_button("レポートを保存", html_report, "seo_report.html", "text/html")
+    else:
+        st.error("サイトマップからURLを読み取れませんでした。")
+elif not api_key:
+    st.warning("APIキーを入力してください。")
