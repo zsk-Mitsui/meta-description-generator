@@ -11,7 +11,7 @@ import re
 st.set_page_config(page_title="プロ仕様 SEO Meta Generator", layout="wide")
 
 st.title("🚀 プロ仕様 SEO Meta Description 生成アプリ")
-st.write("UIを改善しました。タグを表示せず、綺麗なリンクと表で結果を確認できます。")
+st.write("各ディスクリプション右上のアイコンをクリックして、瞬時にコピー可能です。")
 
 # --- サイドバー設定 ---
 with st.sidebar:
@@ -19,7 +19,6 @@ with st.sidebar:
     api_key = st.secrets.get("GEMINI_API_KEY") or st.text_input("Gemini API Keyを入力", type="password")
     
     st.divider()
-    # 会社名入力（？アイコン復活＆プレースホルダー修正）
     target_company = st.text_input(
         "会社名・ブランド名（任意）", 
         placeholder="例：株式会社サンプル",
@@ -100,7 +99,6 @@ if uploaded_file and api_key:
                 else:
                     desc = f"読み込めませんでした: {body}"
                 
-                # 文字数を計算
                 char_count = len(desc) if "読み込めませんでした" not in desc else 0
                 
                 results.append({
@@ -114,51 +112,39 @@ if uploaded_file and api_key:
             
             st.success("✅ 全ページの処理が完了しました！")
             
-            # --- UI表示部分 ---
+            # --- 1. 概要表 (UI表示) ---
             df = pd.DataFrame(results)
-            st.write("### 生成結果一覧")
-            
-            # リンク列をURLとして認識させ、タグを表示させない設定
+            st.write("### 📊 生成結果サマリー")
             st.dataframe(
                 df,
                 column_config={
-                    "URL": st.column_config.LinkColumn("URL (クリックで移動)"),
+                    "URL": st.column_config.LinkColumn("URL"),
                     "文字数": st.column_config.NumberColumn("文字数", format="%d 字")
                 },
                 hide_index=True,
                 use_container_width=True
             )
             
-            # --- ダウンロード用HTML作成 ---
-            html_rows = ""
-            for r in results:
-                html_rows += f"""
-                <tr>
-                    <td><a href="{r['URL']}" target="_blank">{r['URL']}</a></td>
-                    <td>{r['タイトル']}</td>
-                    <td>{r['生成ディスクリプション']}</td>
-                    <td style="text-align:center;">{r['文字数']}</td>
-                </tr>
-                """
+            # --- 2. コピペ用セクション (新機能！) ---
+            st.divider()
+            st.write("### 📋 コピペ用リスト (右上のアイコンでコピー)")
             
-            full_html = f"""
-            <html><head><meta charset='UTF-8'>
-            <style>
-                body {{ font-family: sans-serif; padding: 20px; }}
-                table {{ width:100%; border-collapse: collapse; font-size:14px; }}
-                th {{ background:#007bff; color:white; padding:10px; text-align:left; }}
-                td {{ border:1px solid #ddd; padding:10px; vertical-align:top; }}
-                tr:nth-child(even) {{ background-color: #f9f9f9; }}
-                a {{ color:#007bff; text-decoration:none; }}
-            </style>
-            </head><body>
-            <h1>SEO Meta Description Report</h1>
-            <table>
-                <tr><th>URL</th><th>タイトル</th><th>生成結果</th><th style="width:60px;">文字数</th></tr>
-                {html_rows}
-            </table>
-            </body></html>
-            """
+            for i, res in enumerate(results):
+                # 1ページ分を枠で囲む
+                with st.container(border=True):
+                    c1, c2 = st.columns([4, 1])
+                    with c1:
+                        st.markdown(f"**[{i+1}] {res['タイトル']}**")
+                        st.caption(res['URL'])
+                    with c2:
+                        st.write(f"📏 {res['文字数']} 字")
+                    
+                    # ここがコピー機能のキモ
+                    st.code(res['生成ディスクリプション'], language=None)
+            
+            # --- 3. ダウンロード用HTML作成 ---
+            html_rows = "".join([f"<tr><td><a href='{r['URL']}'>{r['URL']}</a></td><td>{r['タイトル']}</td><td>{r['生成ディスクリプション']}</td><td>{r['文字数']}</td></tr>" for r in results])
+            full_html = f"<html><head><meta charset='UTF-8'><style>body{{font-family:sans-serif;padding:20px;}} table{{width:100%;border-collapse:collapse;font-size:14px;}} th{{background:#007bff;color:white;padding:10px;text-align:left;}} td{{border:1px solid #ddd;padding:10px;}}</style></head><body><h1>SEO Report</h1><table><tr><th>URL</th><th>タイトル</th><th>生成結果</th><th>文字数</th></tr>{html_rows}</table></body></html>"
             
             st.download_button("レポート（HTML）を保存", full_html, "seo_meta_report.html", "text/html")
     else:
