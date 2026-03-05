@@ -10,14 +10,20 @@ import re
 st.set_page_config(page_title="プロ仕様 SEO Meta Generator", layout="wide")
 
 st.title("🚀 プロ仕様 SEO Meta Description 生成アプリ")
-st.write("文章を途中で切らず、最後まで自然に完結したディスクリプションを生成します。")
+st.write("会社名の統一、150文字制限、リンク付きレポート出力を備えた決定版です。")
 
 # --- サイドバー設定 ---
 with st.sidebar:
     st.header("⚙️ 設定")
     api_key = st.secrets.get("GEMINI_API_KEY") or st.text_input("Gemini API Key", type="password")
     st.divider()
-    target_company = st.text_input("会社名・ブランド名（任意）", placeholder="例：株式会社マカナ")
+    
+    # プレースホルダーを汎用的にし、ヘルプを追加
+    target_company = st.text_input(
+        "会社名・ブランド名（任意）", 
+        placeholder="例：株式会社サンプル、合同会社ABC",
+        help="ここに入力すると、AIが全ページでこの名称を正確に使用します。空欄の場合はページ内容から自動判別します。"
+    )
 
 # --- 関数定義 ---
 
@@ -66,9 +72,9 @@ def generate_description(api_key, model_name, url, title, body_text, company_nam
 
         【厳守ルール】
         ・文章は必ず最後（句点「。」）まで書ききり、自然に完結させること。
-        ・「120文字〜145文字」程度を目標に作成し、最大でも155文字以内には収めること。
+        ・文字数は「120文字〜145文字」程度を目標に作成し、最大でも155文字以内には収めること。
         ・絶対に文章の途中で終わらせないこと。
-        ・「（150文字）」などの注釈や、文字数カウント、解説は一切含めず、ディスクリプション本文のみを出力すること。
+        ・「（150文字）」などの注釈や、文字数カウント、解説は一切含めず、本文のみを出力すること。
         {company_rule}
 
         URL: {url}
@@ -78,15 +84,10 @@ def generate_description(api_key, model_name, url, title, body_text, company_nam
         response = model.generate_content(prompt)
         text = response.text.strip()
         
-        # --- クリーニング処理 ---
-        # 1. AIが勝手につけた注釈や「ディスクリプション：」等のゴミを除去
+        # クリーニング
         text = re.sub(r'[\(（]\d+文字[\)）]', '', text)
         text = re.sub(r'^.*?[:：]', '', text)
-        text = text.strip()
-        
-        # 強制カット処理は廃止（自然な完結を優先）
-            
-        return text
+        return text.strip()
     except Exception as e:
         return f"エラー: {str(e)}"
 
@@ -110,8 +111,11 @@ if uploaded_file and api_key:
             else:
                 description = f"スキップ ({body})"
             
+            # URLをリンクタグ形式に変換
+            linked_url = f'<a href="{url}" target="_blank">{url}</a>'
+            
             results.append({
-                "URL": url,
+                "URL": linked_url,
                 "タイトル": title,
                 "生成ディスクリプション": description,
                 "文字数": len(description)
@@ -120,9 +124,32 @@ if uploaded_file and api_key:
             time.sleep(1)
             
         df = pd.DataFrame(results)
-        st.dataframe(df)
+        
+        # 画面表示用（リンクをHTMLとして解釈させる）
+        st.write("### 生成結果")
+        st.write(df.to_html(escape=False, index=False), unsafe_allow_html=True)
         
         # HTMLレポート出力
         html_table = df.to_html(classes='table', index=False, escape=False)
-        html_report = f"<html><head><meta charset='UTF-8'><style>body{{font-family:sans-serif;padding:30px;color:#333;}} table{{border-collapse:collapse;width:100%;}} th{{background:#007bff;color:white;padding:10px;text-align:left;}} td{{padding:10px;border-bottom:1px solid #eee;font-size:14px;}}</style></head><body><h1>SEO Meta Description Report</h1>{html_table}</body></html>"
+        html_report = f"""
+        <html>
+        <head>
+            <meta charset='UTF-8'>
+            <style>
+                body {{ font-family: sans-serif; padding: 30px; color: #333; }}
+                table {{ border-collapse: collapse; width: 100%; }}
+                th {{ background: #007bff; color: white; padding: 12px; text-align: left; }}
+                td {{ padding: 12px; border-bottom: 1px solid #eee; font-size: 14px; vertical-align: top; }}
+                tr:hover {{ background: #f8f9fa; }}
+                a {{ color: #007bff; text-decoration: none; }}
+                a:hover {{ text-decoration: underline; }}
+            </style>
+        </head>
+        <body>
+            <h1>SEO Meta Description Report</h1>
+            <p>※URLをクリックするとページを確認できます。</p>
+            {html_table}
+        </body>
+        </html>
+        """
         st.download_button("レポート（HTML）を保存", html_report, "seo_meta_report.html", "text/html")
