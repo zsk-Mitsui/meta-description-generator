@@ -11,20 +11,18 @@ import re
 st.set_page_config(page_title="プロ仕様 SEO Meta Generator", layout="wide")
 
 st.title("🚀 プロ仕様 SEO Meta Description 生成アプリ")
-st.write("各ディスクリプション右上のアイコンをクリックして、瞬時にコピー可能です。")
+st.write("アプリ上でも、ダウンロードしたレポート上でも、ワンクリックでコピーが可能です。")
 
 # --- サイドバー設定 ---
 with st.sidebar:
     st.header("⚙️ 設定")
     api_key = st.secrets.get("GEMINI_API_KEY") or st.text_input("Gemini API Keyを入力", type="password")
-    
     st.divider()
     target_company = st.text_input(
         "会社名・ブランド名（任意）", 
         placeholder="例：株式会社サンプル",
         help="ここに入力すると、AIが全ページでこの名称を正確に使用します。空欄の場合はページ内容から自動判別します。"
     )
-
     st.divider()
     st.header("🔒 ベーシック認証")
     basic_user = st.text_input("ユーザー名")
@@ -46,12 +44,10 @@ def scrape_page_content(url, user=None, pw=None):
         res.encoding = res.apparent_encoding
         if res.status_code == 401: return "認証失敗", "ID/PWが違います"
         if res.status_code != 200: return "取得失敗", f"HTTP {res.status_code}"
-        
         soup = BeautifulSoup(res.text, 'html.parser')
         title = soup.title.string if soup.title else "タイトルなし"
         for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
         body = soup.get_text(separator=' ', strip=True)[:1500]
-        
         if "{" in title and "}" in title: title = f"【要確認】{title}"
         return title, body
     except Exception as e: return "取得失敗", str(e)
@@ -60,7 +56,7 @@ def get_best_model_name(api_key):
     try:
         genai.configure(api_key=api_key)
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        priorities = ["models/gemini-1.5-flash", "models/gemini-1.5-flash-latest", "models/gemini-pro"]
+        priorities = ["models/gemini-1.5-flash", "models/gemini-pro"]
         for p in priorities:
             if p in available_models: return p
         return available_models[0] if available_models else "models/gemini-1.5-flash"
@@ -100,52 +96,49 @@ if uploaded_file and api_key:
                     desc = f"読み込めませんでした: {body}"
                 
                 char_count = len(desc) if "読み込めませんでした" not in desc else 0
-                
-                results.append({
-                    "URL": url, 
-                    "タイトル": title, 
-                    "生成ディスクリプション": desc,
-                    "文字数": char_count
-                })
+                results.append({"URL": url, "タイトル": title, "生成結果": desc, "文字数": char_count})
                 progress_bar.progress((i + 1) / len(urls))
                 time.sleep(1)
             
             st.success("✅ 全ページの処理が完了しました！")
             
-            # --- 1. 概要表 (UI表示) ---
+            # --- アプリ上の表示 ---
             df = pd.DataFrame(results)
-            st.write("### 📊 生成結果サマリー")
-            st.dataframe(
-                df,
-                column_config={
-                    "URL": st.column_config.LinkColumn("URL"),
-                    "文字数": st.column_config.NumberColumn("文字数", format="%d 字")
-                },
-                hide_index=True,
-                use_container_width=True
-            )
+            st.dataframe(df, column_config={"URL": st.column_config.LinkColumn("URL")}, hide_index=True, use_container_width=True)
             
-            # --- 2. コピペ用セクション (新機能！) ---
             st.divider()
-            st.write("### 📋 コピペ用リスト (右上のアイコンでコピー)")
-            
+            st.write("### 📋 コピペ用リスト (アプリ上)")
             for i, res in enumerate(results):
-                # 1ページ分を枠で囲む
                 with st.container(border=True):
-                    c1, c2 = st.columns([4, 1])
-                    with c1:
-                        st.markdown(f"**[{i+1}] {res['タイトル']}**")
-                        st.caption(res['URL'])
-                    with c2:
-                        st.write(f"📏 {res['文字数']} 字")
-                    
-                    # ここがコピー機能のキモ
-                    st.code(res['生成ディスクリプション'], language=None)
+                    st.markdown(f"**[{i+1}] {res['タイトル']}**")
+                    st.code(res['生成結果'], language=None)
             
-            # --- 3. ダウンロード用HTML作成 ---
-            html_rows = "".join([f"<tr><td><a href='{r['URL']}'>{r['URL']}</a></td><td>{r['タイトル']}</td><td>{r['生成ディスクリプション']}</td><td>{r['文字数']}</td></tr>" for r in results])
-            full_html = f"<html><head><meta charset='UTF-8'><style>body{{font-family:sans-serif;padding:20px;}} table{{width:100%;border-collapse:collapse;font-size:14px;}} th{{background:#007bff;color:white;padding:10px;text-align:left;}} td{{border:1px solid #ddd;padding:10px;}}</style></head><body><h1>SEO Report</h1><table><tr><th>URL</th><th>タイトル</th><th>生成結果</th><th>文字数</th></tr>{html_rows}</table></body></html>"
+            # --- ダウンロード用HTML作成 (JavaScriptコピー機能付き) ---
+            html_rows = ""
+            for r in results:
+                # JSでエラーにならないようシングルクォートをエスケープ
+                safe_desc = r['生成結果'].replace("'", "\\'")
+                html_rows += f"""
+                <tr>
+                    <td><a href="{r['URL']}" target="_blank">{r['URL']}</a></td>
+                    <td>{r['タイトル']}</td>
+                    <td>
+                        <span id="desc-{results.index(r)}">{r['生成結果']}</span>
+                        <br>
+                        <button class="copy-btn" onclick="copyText('desc-{results.index(r)}', this)">コピー</button>
+                    </td>
+                    <td style="text-align:center;">{r['文字数']}</td>
+                </tr>
+                """
             
-            st.download_button("レポート（HTML）を保存", full_html, "seo_meta_report.html", "text/html")
-    else:
-        st.error("URLが見つかりません。")
+            full_html = f"""
+            <html><head><meta charset='UTF-8'>
+            <title>SEO Meta Report</title>
+            <style>
+                body {{ font-family: sans-serif; padding: 30px; color: #333; line-height: 1.6; }}
+                table {{ width: 100%; border-collapse: collapse; margin-top: 20px; table-layout: fixed; }}
+                th {{ background: #007bff; color: white; padding: 12px; text-align: left; }}
+                td {{ border: 1px solid #ddd; padding: 12px; vertical-align: top; word-wrap: break-word; }}
+                tr:nth-child(even) {{ background-color: #f9f9f9; }}
+                .copy-btn {{ 
+                    margin-top: 8px; padding: 5px
