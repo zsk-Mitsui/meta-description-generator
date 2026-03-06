@@ -61,7 +61,7 @@ def scrape_page(url, session, auth):
         if res.status_code != 200: return "取得失敗", f"HTTP {res.status_code}"
         soup = BeautifulSoup(res.text, 'html.parser')
         title = soup.title.string.strip() if soup.title else "タイトルなし"
-        # 本文抽出（不要タグ除去）
+        # 不要タグ除去
         for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
         body = soup.get_text(separator=' ', strip=True)[:1500]
         return title, body
@@ -71,7 +71,7 @@ def scrape_page(url, session, auth):
 def generate_meta(model, url, title, body, company):
     try:
         prompt = f"""SEOプロフェッショナルとして、以下の内容から120〜145文字の日本語meta descriptionを作成してください。
-        ・社名は必ず「{company}」と表記すること。略さない。
+        ・社名は必ず「{company}」と表記すること。
         ・最後は必ず句点「。」で完結。
         ・解説、文字数カウント、括弧書きは一切含めず、本文のみ出力せよ。
         URL: {url} / タイトル: {title} / 内容: {body}"""
@@ -94,7 +94,7 @@ if login_check():
         st.header("⚙️ 設定")
         api_key = st.secrets.get("GEMINI_API_KEY") or st.text_input("Gemini API Key", type="password")
         st.divider()
-        target_company = st.text_input("社名の固定 (空欄なら自動判定)", placeholder="例：株式会社サンプル")
+        target_company = st.text_input("社名の固定 (空欄ならAIが自動判定)", placeholder="例：株式会社サンプル")
         st.divider()
         st.header("🔒 認証")
         b_user = st.text_input("Basic User")
@@ -123,7 +123,7 @@ if login_check():
                 
                 with st.status("SEO解析および並列生成を実行中...", expanded=True) as status:
                     with requests.Session() as session:
-                        # 会社名の自動特定（未入力時のみ）
+                        # 会社名の自動特定
                         final_company = target_company
                         if not final_company:
                             st.write("🔍 サイトから正式な会社名を特定しています...")
@@ -134,18 +134,16 @@ if login_check():
                                 st.write(f"✅ 社名を「{final_company}」に統一します。")
                             except: final_company = "貴社"
 
-                        # ThreadPoolExecutorによる並列実行
+                        # ThreadPoolExecutorによる並列実行（5並列）
                         st.write("🚀 各ページのディスクリプションを並列生成中...")
                         progress_bar = st.progress(0)
                         
-                        # タスク定義
                         def process_task(url):
                             t, b = scrape_page(url, session, auth)
                             if t == "取得失敗": return {"URL": url, "タイトル": t, "結果": b, "文字数": 0}
                             desc = generate_meta(model, url, t, b, final_company)
                             return {"URL": url, "タイトル": t, "結果": desc, "文字数": len(desc)}
 
-                        # 並列処理実行（5並列に固定）
                         with ThreadPoolExecutor(max_workers=5) as executor:
                             future_to_url = {executor.submit(process_task, url): url for url in urls}
                             for i, future in enumerate(as_completed(future_to_url)):
@@ -155,7 +153,7 @@ if login_check():
                 
                 status.update(label="✨ すべての処理が完了しました！", state="complete", expanded=False)
 
-                # --- 4. 結果表示（横スクロールなし） ---
+                # --- 結果表示 ---
                 st.write("### 📋 生成結果サマリー")
                 html_table = "<table class='report-table'><tr><th style='width:25%'>URL</th><th style='width:20%'>タイトル</th><th style='width:45%'>生成結果</th><th style='width:10%'>文字数</th></tr>"
                 for r in results:
@@ -170,9 +168,4 @@ if login_check():
                     if r['文字数'] > 0:
                         with st.container(border=True):
                             st.markdown(f"**{r['タイトル']}**")
-                            st.code(r['結果'], language=None)
-
-                # レポート用HTML作成
-                html_rows_download = "".join([f"<tr><td><a href='{r['URL']}'>{r['URL']}</a></td><td>{r['タイトル']}</td><td>{r['結果']}</td><td>{r['文字数']}</td></tr>" for r in results])
-                full_html = f"<html><head><meta charset='UTF-8'><style>body{{font-family:sans-serif;padding:20px;}} table{{width:100%;border-collapse:collapse;}} th{{background:#007bff;color:white;padding:10px;text-align:left;}} td{{border:1px solid #ddd;padding:10px;}}</style></head><body><h1>SEO Report</h1><table><tr><th>URL</th><th>タイトル</th><th>生成結果</th><th>文字数</th></tr>{html_rows_download}</table></body></html>"
-                st.download_button("レポート（HTML）を保存", full_html, "seo_report.html", "text/html")
+                            st.code(r['結果
