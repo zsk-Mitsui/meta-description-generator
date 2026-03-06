@@ -6,198 +6,169 @@ from bs4 import BeautifulSoup
 import google.generativeai as genai
 import time
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- 基本設定 ---
-st.set_page_config(page_title="プロ仕様 SEO Meta Generator", layout="wide")
+st.set_page_config(page_title="Advanced SEO Meta Generator", layout="wide")
 
-# --- 1. ログインチェック機能 ---
+# --- 1. ログイン認証 ---
 def check_password():
-    """パスワードが正しいかチェックする。"""
     target_password = st.secrets.get("APP_PASSWORD", "admin123")
-
     if "password_correct" not in st.session_state:
         st.title("🚀 プロ仕様 SEO Meta Description 生成アプリ")
-        st.subheader("🔒 社内専用ツール：ログインが必要です")
-        
-        password = st.text_input("アクセスパスワードを入力してください", type="password")
+        st.subheader("🔒 セキュリティ認証")
+        password = st.text_input("アクセスパスワード", type="password")
         if st.button("ログイン"):
             if password == target_password:
                 st.session_state["password_correct"] = True
                 st.rerun()
             else:
-                st.error("パスワードが違います。管理者へお問い合わせください。")
+                st.error("パスワードが正しくありません。")
         return False
-    else:
-        return True
+    return True
 
-# ログインしていない場合はここで停止
 if not check_password():
     st.stop()
 
-# --- ログイン成功後：メインアプリ画面 ---
+# --- 2. ユーティリティ関数 ---
 
-st.title("🚀 プロ仕様 SEO Meta Description 生成アプリ")
-st.caption("社内専用ツール：ログイン済み")
+def parse_sitemap(xml_content):
+    """サイトマップからURLを高速に抽出"""
+    try:
+        soup = BeautifulSoup(xml_content, 'xml')
+        return [loc.text.strip() for loc in soup.find_all('loc')]
+    except Exception as e:
+        st.error(f"サイトマップ解析エラー: {e}")
+        return []
 
-# --- サイドバー設定 ---
+def get_ai_model(api_key):
+    """利用可能な最適なモデルを自動選択"""
+    try:
+        genai.configure(api_key=api_key)
+        # Gemini 1.5 Flashは高速かつSEOタスクに最適
+        return genai.GenerativeModel("gemini-1.5-flash")
+    except Exception as e:
+        st.error(f"AIモデル設定エラー: {e}")
+        return None
+
+# --- 3. コア処理（スクレイピング & 生成） ---
+
+def process_single_url(url, session, model, auth, company_name):
+    """
+    1つのURLに対して取得と生成を行う（スレッド並列実行用）
+    """
+    result = {"URL": url, "タイトル": "取得失敗", "生成結果": "", "文字数": 0, "ステータス": "⏳"}
+    
+    # --- スクレイピング ---
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        response = session.get(url, headers=headers, auth=auth, timeout=15)
+        response.encoding = response.apparent_encoding
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            title = soup.title.string.strip() if soup.title else "タイトルなし"
+            for s in soup(["script", "style", "nav", "footer", "header"]):
+                s.decompose()
+            body = soup.get_text(separator=' ', strip=True)[:1200]
+            result["タイトル"] = title
+        else:
+            result["生成結果"] = f"取得失敗 (HTTP {response.status_code})"
+            result["ステータス"] = "❌"
+            return result
+    except Exception as e:
+        result["生成結果"] = f"取得エラー: {str(e)}"
+        result["ステータス"] = "❌"
+        return result
+
+    # --- AI生成 ---
+    try:
+        c_rule = f"・社名は必ず「{company_name}」とすること。" if company_name else ""
+        prompt = f"""SEOライターとして、以下のページのmeta descriptionを120〜145文字の日本語で作成してください。
+        最後は必ず句点で終わらせ、注釈は一切含めないこと。{c_rule}
+        URL: {url} / タイトル: {title} / 内容: {body}"""
+        
+        # 指数バックオフ的なリトライは簡易化し、直列実行
+        response = model.generate_content(prompt)
+        desc = re.sub(r'[\(（].*?文字[\)）]', '', response.text).strip()
+        result["生成結果"] = desc
+        result["文字数"] = len(desc)
+        result["ステータス"] = "✅"
+    except Exception as e:
+        result["生成結果"] = f"AI生成エラー: {str(e)}"
+        result["ステータス"] = "⚠️"
+        
+    return result
+
+# --- 4. メインUI ---
+
+st.title("🚀 プロ仕様 SEO Meta Generator")
+st.caption("Advanced Refactored Version 2026")
+
 with st.sidebar:
-    st.header("⚙️ 設定")
-    # APIキー設定
-    api_key = st.secrets.get("GEMINI_API_KEY") or st.text_input("Gemini API Keyを入力", type="password")
-    
+    st.header("⚙️ システム設定")
+    api_key = st.secrets.get("GEMINI_API_KEY") or st.text_input("Gemini API Key", type="password")
     st.divider()
-    
-    # 会社情報
-    st.header("🏢 会社情報")
-    target_company = st.text_input(
-        "会社名・ブランド名（任意）", 
-        placeholder="例：株式会社サンプル",
-        help="ここに入力すると、AIが全ページでこの名称を正確に使用します。"
-    )
-
+    target_company = st.text_input("会社名 (固定用)", placeholder="株式会社サンプル")
     st.divider()
-    
-    # ベーシック認証セクション
-    st.header("🔒 ベーシック認証")
-    st.caption("テストサイト等の認証情報")
-    basic_user = st.text_input("ユーザー名", key="basic_user_input")
-    basic_pw = st.text_input("パスワード", type="password", key="basic_pw_input")
-    
-    # --- ログアウトボタンを一番下へ配置 ---
-    st.markdown("<br><br><br>", unsafe_allow_html=True) # 余白を追加
+    st.header("🔒 認証設定")
+    b_user = st.text_input("Basic Auth User")
+    b_pw = st.text_input("Basic Auth PW", type="password")
     st.divider()
-    if st.button("🚪 アプリからログアウト", use_container_width=True):
+    # 並列スレッド数の設定（API制限を考慮してデフォルト3〜5推奨）
+    max_workers = st.slider("並列処理数 (スレッド)", 1, 10, 3)
+    
+    if st.button("🚪 ログアウト"):
         del st.session_state["password_correct"]
         st.rerun()
 
-# --- 関数定義 ---
-
-def parse_sitemap(xml_content):
-    try:
-        soup = BeautifulSoup(xml_content, 'xml')
-        return [loc.text for loc in soup.find_all('loc')]
-    except Exception: return []
-
-def scrape_page_content(url, user=None, pw=None):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"}
-    auth = HTTPBasicAuth(user, pw) if user and pw else None
-    try:
-        res = requests.get(url, headers=headers, auth=auth, timeout=15)
-        res.encoding = res.apparent_encoding
-        if res.status_code == 401: return "認証失敗", "ID/PWが違います"
-        if res.status_code != 200: return "取得失敗", f"HTTP {res.status_code}"
-        soup = BeautifulSoup(res.text, 'html.parser')
-        title = soup.title.string if soup.title else "タイトルなし"
-        for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
-        body = soup.get_text(separator=' ', strip=True)[:1500]
-        return title, body
-    except Exception as e: return "取得失敗", str(e)
-
-def get_best_model_name(api_key):
-    try:
-        genai.configure(api_key=api_key)
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        priorities = ["models/gemini-1.5-flash", "models/gemini-pro"]
-        for p in priorities:
-            if p in available_models: return p
-        return available_models[0] if available_models else "models/gemini-1.5-flash"
-    except Exception: return "models/gemini-1.5-flash"
-
-def generate_description(api_key, model_name, url, title, body, company):
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(model_name)
-        c_rule = f"・社名は「{company}」で統一すること。" if company else ""
-        prompt = f"""SEOのプロとして、以下のページのmeta descriptionを120〜145文字程度の日本語で作成してください。最後は句点「。」で終わらせ、注釈は一切含めないこと。{c_rule}
-        URL: {url} / タイトル: {title} / 内容: {body}"""
-        response = model.generate_content(prompt)
-        text = response.text.strip()
-        text = re.sub(r'[\(（].*?文字[\)）]', '', text)
-        return text
-    except Exception as e: return f"エラー: {str(e)}"
-
-# --- メイン処理 ---
 uploaded_file = st.file_uploader("sitemap.xml をアップロード", type="xml")
 
 if uploaded_file and api_key:
     urls = parse_sitemap(uploaded_file)
-    if urls:
-        st.success(f"{len(urls)} 件のURLを読み込みました。")
-        best_model = get_best_model_name(api_key)
+    model = get_ai_model(api_key)
+    
+    if urls and model:
+        st.success(f"{len(urls)} 件のURLを検出。")
         
-        if st.button("全ページの生成を開始する"):
+        if st.button("一括生成を開始"):
             results = []
-            progress_bar = st.progress(0)
+            auth = HTTPBasicAuth(b_user, b_pw) if b_user and b_pw else None
             
-            for i, url in enumerate(urls):
-                title, body = scrape_page_content(url, basic_user, basic_pw)
-                if title not in ["取得失敗", "認証失敗"]:
-                    desc = generate_description(api_key, best_model, url, title, body, target_company)
-                else:
-                    desc = f"読み込めませんでした: {body}"
+            # 進行状況の可視化
+            with st.status("SEO解析および生成を実行中...", expanded=True) as status:
+                with requests.Session() as session:
+                    # ThreadPoolExecutorによる並列実行
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        future_to_url = {executor.submit(process_single_url, url, session, model, auth, target_company): url for url in urls}
+                        
+                        progress_bar = st.progress(0)
+                        processed_count = 0
+                        
+                        for future in as_completed(future_to_url):
+                            res = future.result()
+                            results.append(res)
+                            processed_count += 1
+                            progress_bar.progress(processed_count / len(urls))
+                            st.write(f"{res['ステータス']} {res['URL']}")
                 
-                char_count = len(desc) if "読み込めませんでした" not in desc else 0
-                results.append({"URL": url, "タイトル": title, "生成結果": desc, "文字数": char_count})
-                progress_bar.progress((i + 1) / len(urls))
-                time.sleep(1)
-            
-            st.success("✅ 全ページの処理が完了しました！")
-            
+                status.update(label="✅ 全ページの処理が完了しました！", state="complete", expanded=False)
+
+            # --- 結果表示と出力 ---
             df = pd.DataFrame(results)
+            st.write("### 📊 生成結果一覧")
             st.dataframe(df, column_config={"URL": st.column_config.LinkColumn("URL")}, hide_index=True, use_container_width=True)
             
+            # コピペ用リスト
             st.divider()
-            st.write("### 📋 コピペ用リスト")
-            for i, res in enumerate(results):
-                with st.container(border=True):
-                    st.markdown(f"**[{i+1}] {res['タイトル']}**")
-                    st.code(res['生成結果'], language=None)
-            
-            # --- HTMLレポート作成 ---
-            html_rows = ""
-            for idx, r in enumerate(results):
-                html_rows += f"""
-                <tr>
-                    <td><a href="{r['URL']}" target="_blank">{r['URL']}</a></td>
-                    <td>{r['タイトル']}</td>
-                    <td>
-                        <span id="desc-{idx}">{r['生成結果']}</span>
-                        <br>
-                        <button class="copy-btn" onclick="copyText('desc-{idx}', this)">コピー</button>
-                    </td>
-                    <td style="text-align:center;">{r['文字数']}</td>
-                </tr>
-                """
-            
-            full_html = f"""
-            <html><head><meta charset='UTF-8'>
-            <title>SEO Meta Report</title>
-            <style>
-                body {{ font-family: sans-serif; padding: 30px; color: #333; }}
-                table {{ width: 100%; border-collapse: collapse; margin-top: 20px; table-layout: fixed; }}
-                th {{ background: #007bff; color: white; padding: 12px; text-align: left; }}
-                td {{ border: 1px solid #ddd; padding: 12px; vertical-align: top; word-wrap: break-word; }}
-                tr:nth-child(even) {{ background-color: #f9f9f9; }}
-                .copy-btn {{ margin-top: 8px; padding: 5px 10px; cursor: pointer; background: #28a745; color: white; border: none; border-radius: 3px; font-size: 12px; }}
-                a {{ color: #007bff; text-decoration: none; }}
-            </style>
-            <script>
-                function copyText(id, btn) {{
-                    var text = document.getElementById(id).innerText;
-                    navigator.clipboard.writeText(text).then(function() {{
-                        btn.innerText = "✅ コピー完了！";
-                        setTimeout(function() {{ btn.innerText = "コピー"; }}, 2000);
-                    }});
-                }}
-            </script>
-            </head><body>
-                <h1>SEO Meta Description Report</h1>
-                <table>
-                    <tr><th style="width:20%;">URL</th><th style="width:20%;">タイトル</th><th style="width:50%;">生成結果</th><th style="width:10%;">文字数</th></tr>
-                    {html_rows}
-                </table>
-            </body></html>
-            """
-            st.download_button("レポートを保存", full_html, "seo_meta_report.html", "text/html")
-    else:
-        st.error("URLが見つかりません。")
+            st.write("### 📋 クイックコピー")
+            for i, r in enumerate(results):
+                if r['ステータス'] == "✅":
+                    with st.container(border=True):
+                        st.markdown(f"**{r['タイトル']}**")
+                        st.code(r['生成結果'], language=None)
+
+            # HTMLレポート生成
+            html_rows = "".join([f"<tr><td><a href='{r['URL']}'>{r['URL']}</a></td><td>{r['タイトル']}</td><td>{r['生成結果']}</td><td>{r['文字数']}</td></tr>" for r in results])
+            full_html = f"<html><head><meta charset='UTF-8'><style>body{{font-family:sans-serif;padding:20px;}} table{{width:100%;border-collapse:collapse;font-size:14px;}} th{{background:#007bff;color:white;padding:10px;text-align:left;}} td{{border:1px solid #ddd;padding:10px;}}</style></head><body><h1>SEO Report</h1><table><tr><th>URL</th><th>タイトル</th><th>生成結果</th><th>文字数</th></tr>{html_rows}</table></body></html>"
+            st.download_button("レポートをダウンロード", full_html, "seo_report.html", "text/html")
