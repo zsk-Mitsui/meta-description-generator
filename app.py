@@ -127,4 +127,50 @@ if login_check():
                             try:
                                 res_name = model.generate_content(f"以下から正式社名のみ抽出せよ：{t} {b}")
                                 final_company = res_name.text.strip()
-                                st.write(f"✅ 社名を「{final_company}」に決定
+                                st.write(f"✅ 社名を「{final_company}」に決定しました。")
+                            except: final_company = "貴社"
+
+                        st.write("🚀 ディスクリプションを順次生成しています...")
+                        progress_bar = st.progress(0)
+                        
+                        def process_task(url):
+                            # 各スレッド内でエラーをキャッチして返すように強化
+                            try:
+                                t, b = scrape_page(url, session, auth)
+                                if t == "取得失敗":
+                                    return {"URL": url, "タイトル": t, "結果": b, "文字数": 0}
+                                desc = generate_meta(model, url, t, b, final_company)
+                                return {"URL": url, "タイトル": t, "結果": desc, "文字数": len(desc)}
+                            except Exception as inner_e:
+                                return {"URL": url, "タイトル": "処理エラー", "結果": str(inner_e), "文字数": 0}
+
+                        # 並列数を3に下げて安定性を向上
+                        with ThreadPoolExecutor(max_workers=3) as executor:
+                            future_to_url = {executor.submit(process_task, url): url for url in urls}
+                            for i, future in enumerate(as_completed(future_to_url)):
+                                res = future.result()
+                                results.append(res)
+                                progress_bar.progress((i + 1) / len(urls))
+                                # リアルタイムに進捗を表示して「止まっていないこと」を明示
+                                st.write(f"完了 ({i+1}/{len(urls)}): {res['URL']}")
+                
+                status.update(label="✨ すべての処理が完了しました！", state="complete", expanded=False)
+
+                st.write("### 📋 生成結果サマリー")
+                html_table = "<table class='report-table'><tr><th style='width:25%'>URL</th><th style='width:20%'>タイトル</th><th style='width:45%'>生成結果</th><th style='width:10%'>文字数</th></tr>"
+                for r in results:
+                    html_table += f"<tr><td><a href='{r['URL']}' target='_blank'>{r['URL']}</a></td><td>{r['タイトル']}</td><td>{r['結果']}</td><td>{r['文字数']}</td></tr>"
+                html_table += "</table>"
+                st.write(html_table, unsafe_allow_html=True)
+
+                st.divider()
+                st.write("### 📑 クイックコピー")
+                for r in results:
+                    if r['文字数'] > 0:
+                        with st.container(border=True):
+                            st.markdown(f"**{r['タイトル']}**")
+                            st.code(r['結果'], language=None)
+
+                html_rows_dl = "".join([f"<tr><td><a href='{r['URL']}'>{r['URL']}</a></td><td>{r['タイトル']}</td><td>{r['結果']}</td><td>{r['文字数']}</td></tr>" for r in results])
+                full_html = f"<html><head><meta charset='UTF-8'><style>body{{font-family:sans-serif;padding:20px;}} table{{width:100%;border-collapse:collapse;}} th{{background:#007bff;color:white;padding:10px;text-align:left;}} td{{border:1px solid #ddd;padding:10px;}}</style></head><body><h1>SEO Report</h1><table><tr><th>URL</th><th>タイトル</th><th>生成結果</th><th>文字数</th></tr>{html_rows_dl}</table></body></html>"
+                st.download_button("レポート（HTML）を保存", full_html, "description_report.html", "text/html")
