@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # --- 基本設定 ---
 st.set_page_config(page_title="Professional SEO Meta Generator", layout="wide")
 
-# カスタムCSS：横スクロールを防止し、文章を枠内で適切に改行
 def apply_custom_css():
     st.markdown("""
         <style>
@@ -41,7 +40,6 @@ def login_check():
 # --- 2. 処理関数群 ---
 
 def get_best_model(api_key):
-    """APIから利用可能なモデルを動的に取得して404を回避"""
     try:
         genai.configure(api_key=api_key)
         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
@@ -56,29 +54,30 @@ def get_best_model(api_key):
 def scrape_page(url, session, auth):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"}
     try:
-        res = session.get(url, headers=headers, auth=auth, timeout=15)
+        # タイムアウトを10秒に設定
+        res = session.get(url, headers=headers, auth=auth, timeout=10)
         res.encoding = res.apparent_encoding
         if res.status_code != 200: return "取得失敗", f"HTTP {res.status_code}"
         soup = BeautifulSoup(res.text, 'html.parser')
-        title = soup.title.string.strip() if soup.title else "タイトルなし"
+        title = (soup.title.string or "タイトルなし").strip()
         for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
-        body = soup.get_text(separator=' ', strip=True)[:1500]
+        body = soup.get_text(separator=' ', strip=True)[:1000]
         return title, body
     except Exception as e:
         return "取得失敗", str(e)
 
 def generate_meta(model, url, title, body, company):
     try:
-        prompt = f"""SEOプロフェッショナルとして、以下の内容から120〜145文字の日本語meta descriptionを作成してください。
-        ・社名は必ず「{company}」と表記すること。
-        ・最後は必ず句点「。」で完結。
-        ・解説、文字数カウント、括弧書きは一切含めず、本文のみ出力せよ。
+        # API制限を考慮し、実行前にわずかに待機（0.2秒）
+        time.sleep(0.2)
+        prompt = f"""SEOプロとして、以下の内容から120〜145文字の日本語meta descriptionを作成してください。
+        ・社名は「{company}」で統一。
+        ・最後は句点「。」で完結。
+        ・余計な注釈は一切含まず、本文のみ出力。
         URL: {url} / タイトル: {title} / 内容: {body}"""
         response = model.generate_content(prompt)
         text = response.text.strip()
-        # AI特有の注釈を除去
-        clean_text = re.sub(r'[\(（].*?文字[\)）]', '', text).strip()
-        return clean_text
+        return re.sub(r'[\(（].*?文字[\)）]', '', text).strip()
     except Exception as e:
         return f"AI生成エラー: {str(e)}"
 
@@ -87,7 +86,7 @@ def generate_meta(model, url, title, body, company):
 if login_check():
     apply_custom_css()
     st.title("🚀 プロ仕様 SEO Meta Generator")
-    st.caption("Parallel High-Speed Mode / ログイン済み")
+    st.caption("Stability Optimized Mode / ログイン済み")
 
     with st.sidebar:
         st.header("⚙️ 設定")
@@ -109,7 +108,6 @@ if login_check():
 
     if uploaded_file and api_key:
         model = get_best_model(api_key)
-        # サイトマップからURL抽出
         soup_sitemap = BeautifulSoup(uploaded_file, 'xml')
         urls = [loc.text.strip() for loc in soup_sitemap.find_all('loc')]
         
@@ -120,19 +118,13 @@ if login_check():
                 auth = HTTPBasicAuth(b_user, b_pw) if b_user and b_pw else None
                 results = []
                 
-                with st.status("SEO解析および並列生成を実行中...", expanded=True) as status:
+                with st.status("SEO解析および生成を実行中...", expanded=True) as status:
                     with requests.Session() as session:
-                        # 会社名の自動特定
                         final_company = target_company
                         if not final_company:
-                            st.write("🔍 サイトから正式な会社名を特定しています...")
+                            st.write("🔍 サイト情報を解析中...")
                             t, b = scrape_page(urls[0], session, auth)
                             try:
                                 res_name = model.generate_content(f"以下から正式社名のみ抽出せよ：{t} {b}")
                                 final_company = res_name.text.strip()
-                                st.write(f"✅ 社名を「{final_company}」に統一します。")
-                            except: final_company = "貴社"
-
-                        # 並列実行（5並列に固定）
-                        st.write("🚀 各ページのディスクリプションを並列生成中...")
-                        progress_bar = st
+                                st.write(f"✅ 社名を「{final_company}」に決定
