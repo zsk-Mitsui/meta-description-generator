@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # --- 基本設定 ---
 st.set_page_config(page_title="Professional SEO Meta Generator", layout="wide")
 
+# カスタムCSS：アプリ画面のテーブルの横スクロールを防止
 def apply_custom_css():
     st.markdown("""
         <style>
@@ -54,26 +55,24 @@ def get_best_model(api_key):
 def scrape_page(url, session, auth):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"}
     try:
-        # タイムアウトを10秒に設定
-        res = session.get(url, headers=headers, auth=auth, timeout=10)
+        res = session.get(url, headers=headers, auth=auth, timeout=12)
         res.encoding = res.apparent_encoding
         if res.status_code != 200: return "取得失敗", f"HTTP {res.status_code}"
         soup = BeautifulSoup(res.text, 'html.parser')
         title = (soup.title.string or "タイトルなし").strip()
         for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
-        body = soup.get_text(separator=' ', strip=True)[:1000]
+        body = soup.get_text(separator=' ', strip=True)[:1200]
         return title, body
     except Exception as e:
         return "取得失敗", str(e)
 
 def generate_meta(model, url, title, body, company):
     try:
-        # API制限を考慮し、実行前にわずかに待機（0.2秒）
-        time.sleep(0.2)
+        time.sleep(0.2) # API制限回避用の微小待機
         prompt = f"""SEOプロとして、以下の内容から120〜145文字の日本語meta descriptionを作成してください。
         ・社名は「{company}」で統一。
         ・最後は句点「。」で完結。
-        ・余計な注釈は一切含まず、本文のみ出力。
+        ・本文のみ出力し、注釈やカウントは含めない。
         URL: {url} / タイトル: {title} / 内容: {body}"""
         response = model.generate_content(prompt)
         text = response.text.strip()
@@ -86,13 +85,17 @@ def generate_meta(model, url, title, body, company):
 if login_check():
     apply_custom_css()
     st.title("🚀 プロ仕様 SEO Meta Generator")
-    st.caption("Stability Optimized Mode / ログイン済み")
+    st.caption("Advanced Stability Mode / ログイン済み")
 
     with st.sidebar:
         st.header("⚙️ 設定")
         api_key = st.secrets.get("GEMINI_API_KEY") or st.text_input("Gemini API Key", type="password")
         st.divider()
-        target_company = st.text_input("社名の固定 (空欄ならAIが自動判定)", placeholder="例：株式会社サンプル")
+        target_company = st.text_input(
+            "社名の指定 (空欄ならAIが自動判定)", 
+            placeholder="例：株式会社サンプル",
+            help="入力すると、全ページでこの名称を正確に使用します。空欄時はサイト内から自動抽出します。"
+        )
         st.divider()
         st.header("🔒 認証")
         b_user = st.text_input("Basic User")
@@ -118,11 +121,12 @@ if login_check():
                 auth = HTTPBasicAuth(b_user, b_pw) if b_user and b_pw else None
                 results = []
                 
-                with st.status("SEO解析および生成を実行中...", expanded=True) as status:
+                with st.status("SEO解析および並列生成を実行中...", expanded=True) as status:
                     with requests.Session() as session:
+                        # 会社名の自動判定ロジック
                         final_company = target_company
                         if not final_company:
-                            st.write("🔍 サイト情報を解析中...")
+                            st.write("🔍 サイト情報を解析して社名を特定中...")
                             t, b = scrape_page(urls[0], session, auth)
                             try:
                                 res_name = model.generate_content(f"以下から正式社名のみ抽出せよ：{t} {b}")
@@ -130,32 +134,30 @@ if login_check():
                                 st.write(f"✅ 社名を「{final_company}」に決定しました。")
                             except: final_company = "貴社"
 
-                        st.write("🚀 ディスクリプションを順次生成しています...")
+                        st.write("🚀 各ページのディスクリプションを生成中...")
                         progress_bar = st.progress(0)
                         
                         def process_task(url):
-                            # 各スレッド内でエラーをキャッチして返すように強化
                             try:
                                 t, b = scrape_page(url, session, auth)
-                                if t == "取得失敗":
-                                    return {"URL": url, "タイトル": t, "結果": b, "文字数": 0}
+                                if t == "取得失敗": return {"URL": url, "タイトル": t, "結果": b, "文字数": 0}
                                 desc = generate_meta(model, url, t, b, final_company)
                                 return {"URL": url, "タイトル": t, "結果": desc, "文字数": len(desc)}
-                            except Exception as inner_e:
-                                return {"URL": url, "タイトル": "処理エラー", "結果": str(inner_e), "文字数": 0}
+                            except Exception as e:
+                                return {"URL": url, "タイトル": "処理エラー", "結果": str(e), "文字数": 0}
 
-                        # 並列数を3に下げて安定性を向上
+                        # 安定性を考慮し並列数3で実行
                         with ThreadPoolExecutor(max_workers=3) as executor:
                             future_to_url = {executor.submit(process_task, url): url for url in urls}
                             for i, future in enumerate(as_completed(future_to_url)):
                                 res = future.result()
                                 results.append(res)
                                 progress_bar.progress((i + 1) / len(urls))
-                                # リアルタイムに進捗を表示して「止まっていないこと」を明示
                                 st.write(f"完了 ({i+1}/{len(urls)}): {res['URL']}")
                 
                 status.update(label="✨ すべての処理が完了しました！", state="complete", expanded=False)
 
+                # --- アプリ画面の表示 ---
                 st.write("### 📋 生成結果サマリー")
                 html_table = "<table class='report-table'><tr><th style='width:25%'>URL</th><th style='width:20%'>タイトル</th><th style='width:45%'>生成結果</th><th style='width:10%'>文字数</th></tr>"
                 for r in results:
@@ -164,13 +166,63 @@ if login_check():
                 st.write(html_table, unsafe_allow_html=True)
 
                 st.divider()
-                st.write("### 📑 クイックコピー")
+                st.write("### 📑 クイックコピー (アプリ上)")
                 for r in results:
                     if r['文字数'] > 0:
                         with st.container(border=True):
                             st.markdown(f"**{r['タイトル']}**")
                             st.code(r['結果'], language=None)
 
-                html_rows_dl = "".join([f"<tr><td><a href='{r['URL']}'>{r['URL']}</a></td><td>{r['タイトル']}</td><td>{r['結果']}</td><td>{r['文字数']}</td></tr>" for r in results])
-                full_html = f"<html><head><meta charset='UTF-8'><style>body{{font-family:sans-serif;padding:20px;}} table{{width:100%;border-collapse:collapse;}} th{{background:#007bff;color:white;padding:10px;text-align:left;}} td{{border:1px solid #ddd;padding:10px;}}</style></head><body><h1>SEO Report</h1><table><tr><th>URL</th><th>タイトル</th><th>生成結果</th><th>文字数</th></tr>{html_rows_dl}</table></body></html>"
-                st.download_button("レポート（HTML）を保存", full_html, "description_report.html", "text/html")
+                # --- ダウンロード用HTML（コピーボタン機能付き） ---
+                html_rows_dl = ""
+                for idx, r in enumerate(results):
+                    html_rows_dl += f"""
+                    <tr>
+                        <td><a href="{r['URL']}" target="_blank">{r['URL']}</a></td>
+                        <td>{r['タイトル']}</td>
+                        <td>
+                            <span id="desc-{idx}">{r['結果']}</span><br>
+                            <button class="copy-btn" onclick="copyText('desc-{idx}', this)">コピー</button>
+                        </td>
+                        <td style="text-align:center;">{r['文字数']}</td>
+                    </tr>"""
+
+                full_html = f"""
+                <html><head><meta charset='UTF-8'>
+                <title>SEO Meta Report</title>
+                <style>
+                    body {{ font-family: sans-serif; padding: 30px; color: #333; }}
+                    table {{ width: 100%; border-collapse: collapse; margin-top: 20px; table-layout: fixed; }}
+                    th {{ background: #007bff; color: white; padding: 12px; text-align: left; }}
+                    td {{ border: 1px solid #ddd; padding: 12px; vertical-align: top; word-wrap: break-word; }}
+                    tr:nth-child(even) {{ background-color: #f9f9f9; }}
+                    .copy-btn {{ 
+                        margin-top: 8px; padding: 5px 10px; cursor: pointer; 
+                        background: #28a745; color: white; border: none; border-radius: 3px; font-size: 12px;
+                    }}
+                    a {{ color: #007bff; text-decoration: none; }}
+                </style>
+                <script>
+                    function copyText(id, btn) {{
+                        var text = document.getElementById(id).innerText;
+                        navigator.clipboard.writeText(text).then(function() {{
+                            var original = btn.innerText;
+                            btn.innerText = "✅ コピー完了";
+                            btn.style.background = "#6c757d";
+                            setTimeout(function() {{ 
+                                btn.innerText = original; 
+                                btn.style.background = "#28a745";
+                            }}, 2000);
+                        }});
+                    }}
+                </script>
+                </head><body>
+                    <h1>SEO Meta Description Report</h1>
+                    <p>生成日時: {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
+                    <table>
+                        <tr><th style="width:20%;">URL</th><th style="width:20%;">タイトル</th><th style="width:50%;">生成結果</th><th style="width:10%;">文字数</th></tr>
+                        {html_rows_dl}
+                    </table>
+                </body></html>"""
+                
+                st.download_button("コピー機能付きレポートを保存", full_html, "description_report.html", "text/html")
