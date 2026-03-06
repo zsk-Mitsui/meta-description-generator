@@ -22,7 +22,7 @@ def apply_custom_css():
         </style>
     """, unsafe_allow_html=True)
 
-# --- 1. ログイン認証 ---
+# --- 1. ログイン認証機能 ---
 def login_check():
     target_password = st.secrets.get("APP_PASSWORD", "admin123")
     if "password_correct" not in st.session_state:
@@ -88,84 +88,4 @@ def generate_meta(model, url, title, body, company):
 if login_check():
     apply_custom_css()
     st.title("🚀 プロ仕様 SEO Meta Generator")
-    st.caption("Parallel High-Speed Mode / ログイン済み")
-
-    with st.sidebar:
-        st.header("⚙️ 設定")
-        api_key = st.secrets.get("GEMINI_API_KEY") or st.text_input("Gemini API Key", type="password")
-        st.divider()
-        target_company = st.text_input("社名の固定 (空欄ならAIが自動判定)", placeholder="例：株式会社サンプル")
-        st.divider()
-        st.header("🔒 認証")
-        b_user = st.text_input("Basic User")
-        b_pw = st.text_input("Basic PW", type="password")
-        
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.divider()
-        if st.button("🚪 アプリからログアウト", use_container_width=True):
-            del st.session_state["password_correct"]
-            st.rerun()
-
-    uploaded_file = st.file_uploader("sitemap.xml をアップロード", type="xml")
-
-    if uploaded_file and api_key:
-        model = get_best_model(api_key)
-        # サイトマップからURL抽出
-        soup_sitemap = BeautifulSoup(uploaded_file, 'xml')
-        urls = [loc.text.strip() for loc in soup_sitemap.find_all('loc')]
-        
-        if urls and model:
-            st.info(f"{len(urls)} 件のURLを検出しました。")
-            
-            if st.button("全ページ一括生成を開始"):
-                auth = HTTPBasicAuth(b_user, b_pw) if b_user and b_pw else None
-                results = []
-                
-                with st.status("SEO解析および並列生成を実行中...", expanded=True) as status:
-                    with requests.Session() as session:
-                        # 会社名の自動特定
-                        final_company = target_company
-                        if not final_company:
-                            st.write("🔍 サイトから正式な会社名を特定しています...")
-                            t, b = scrape_page(urls[0], session, auth)
-                            try:
-                                res_name = model.generate_content(f"以下から正式社名のみ抽出せよ：{t} {b}")
-                                final_company = res_name.text.strip()
-                                st.write(f"✅ 社名を「{final_company}」に統一します。")
-                            except: final_company = "貴社"
-
-                        # ThreadPoolExecutorによる並列実行（5並列）
-                        st.write("🚀 各ページのディスクリプションを並列生成中...")
-                        progress_bar = st.progress(0)
-                        
-                        def process_task(url):
-                            t, b = scrape_page(url, session, auth)
-                            if t == "取得失敗": return {"URL": url, "タイトル": t, "結果": b, "文字数": 0}
-                            desc = generate_meta(model, url, t, b, final_company)
-                            return {"URL": url, "タイトル": t, "結果": desc, "文字数": len(desc)}
-
-                        with ThreadPoolExecutor(max_workers=5) as executor:
-                            future_to_url = {executor.submit(process_task, url): url for url in urls}
-                            for i, future in enumerate(as_completed(future_to_url)):
-                                res = future.result()
-                                results.append(res)
-                                progress_bar.progress((i + 1) / len(urls))
-                
-                status.update(label="✨ すべての処理が完了しました！", state="complete", expanded=False)
-
-                # --- 結果表示 ---
-                st.write("### 📋 生成結果サマリー")
-                html_table = "<table class='report-table'><tr><th style='width:25%'>URL</th><th style='width:20%'>タイトル</th><th style='width:45%'>生成結果</th><th style='width:10%'>文字数</th></tr>"
-                for r in results:
-                    html_table += f"<tr><td><a href='{r['URL']}' target='_blank'>{r['URL']}</a></td><td>{r['タイトル']}</td><td>{r['結果']}</td><td>{r['文字数']}</td></tr>"
-                html_table += "</table>"
-                st.write(html_table, unsafe_allow_html=True)
-
-                # クイックコピーセクション
-                st.divider()
-                st.write("### 📑 クイックコピー")
-                for r in results:
-                    if r['文字数'] > 0:
-                        with st.container(border=True):
-                            st.markdown(f"**{r['タイトル']}**")
-                            st.code(r['結果
+    st.caption("Parallel High-Speed Mode /
