@@ -81,4 +81,83 @@ if login():
         try:
             prompt = f"SEO専門家として、以下の内容から120〜145文字の日本語meta descriptionを作成してください。社名は「{company}」で統一し、最後は句点で完結、注釈は不要です。\nURL: {url} / タイトル: {title} / 内容: {body}"
             response = model.generate_content(prompt)
-            return re.sub(r'[\(（
+            return re.sub(r'[\(（].*?文字[\)）]', '', response.text).strip()
+        except Exception as e: return f"AIエラー: {e}"
+
+    # --- 3. メイン処理 ---
+    uploaded_file = st.file_uploader("sitemap.xml をアップロード", type="xml")
+
+    if uploaded_file and api_key:
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            
+            # サイトマップからURLを抽出
+            soup_sitemap = BeautifulSoup(uploaded_file, 'xml')
+            urls = [loc.text.strip() for loc in soup_sitemap.find_all('loc')]
+            
+            if urls:
+                st.info(f"{len(urls)} 件のURLを検出しました。")
+                
+                if st.button("全ページの一括生成を開始"):
+                    auth = HTTPBasicAuth(b_user, b_pw) if b_user and b_pw else None
+                    results = []
+                    MAX_WORKERS = 5 # 並列数を5に固定
+
+                    with st.status("SEO解析および並列生成を実行中...", expanded=True) as status:
+                        with requests.Session() as session:
+                            # 会社名の自動特定
+                            final_company = target_company
+                            if not final_company:
+                                st.write("🔍 サイトから正式な会社名を特定しています...")
+                                t, b = scrape_page(urls[0], session, auth)
+                                try:
+                                    final_company = model.generate_content(f"以下から正式社名のみ抽出せよ：{t} {b}").text.strip()
+                                    st.write(f"✅ 社名を「{final_company}」に統一します。")
+                                except: final_company = "貴社"
+
+                            # 並列処理実行
+                            st.write("🚀 並列生成中...")
+                            progress_bar = st.progress(0)
+                            
+                            def process_task(url):
+                                t, b = scrape_page(url, session, auth)
+                                if t == "取得失敗": return {"URL": url, "タイトル": t, "結果": b, "文字数": 0}
+                                desc = generate_meta(model, url, t, b, final_company)
+                                return {"URL": url, "タイトル": t, "結果": desc, "文字数": len(desc)}
+
+                            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                                future_to_url = {executor.submit(process_task, url): url for url in urls}
+                                for i, future in enumerate(as_completed(future_to_url)):
+                                    res = future.result()
+                                    results.append(res)
+                                    progress_bar.progress((i + 1) / len(urls))
+                        
+                        status.update(label="✨ すべて完了しました！", state="complete", expanded=False)
+
+                    # 結果表示（横スクロールなし）
+                    st.write("### 📋 生成結果サマリー")
+                    html_table = "<table class='report-table'><tr><th style='width:25%'>URL</th><th style='width:20%'>タイトル</th><th style='width:45%'>生成結果</th><th style='width:10%'>文字数</th></tr>"
+                    for r in results:
+                        html_table += f"<tr><td><a href='{r['URL']}' target='_blank'>{r['URL']}</a></td><td>{r['タイトル']}</td><td>{r['結果']}</td><td>{r['文字数']}</td></tr>"
+                    html_table += "</table>"
+                    st.write(html_table, unsafe_allow_html=True)
+
+                    # クイックコピー
+                    st.divider()
+                    st.write("### 📑 クイックコピー")
+                    for r in results:
+                        if r['文字数'] > 0:
+                            with st.container(border=True):
+                                st.markdown(f"**{r['タイトル']}**")
+                                st.code(r['結果'], language=None)
+
+                    # ダウンロード
+                    full_html = f"<html><head><meta charset='UTF-8'></head><body><h1>SEO Report</h1>{html_table}</body></html>"
+                    st.download_button("レポートを保存", full_html, "seo_report.html", "text/html")
+            else:
+                st.error("サイトマップ内にURLが見つかりません。")
+        except Exception as main_e:
+            st.error(f"実行中にエラーが発生しました: {main_e}")
+    elif not api_key:
+        st.warning("左側の設定でAPIキーを入力してください。")
