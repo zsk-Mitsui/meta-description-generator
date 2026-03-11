@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # --- 基本設定 ---
 st.set_page_config(page_title="Professional SEO Meta Generator", layout="wide")
 
-# カスタムCSS：アプリ画面のテーブルの横スクロールを防止
+# カスタムCSS：横スクロールを防止し、文章を枠内で適切に改行
 def apply_custom_css():
     st.markdown("""
         <style>
@@ -41,6 +41,7 @@ def login_check():
 # --- 2. 処理関数群 ---
 
 def get_best_model(api_key):
+    """APIから利用可能なモデルを動的に取得して404を回避"""
     try:
         genai.configure(api_key=api_key)
         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
@@ -68,7 +69,7 @@ def scrape_page(url, session, auth):
 
 def generate_meta(model, url, title, body, company):
     try:
-        time.sleep(0.2) # API制限回避用の微小待機
+        time.sleep(0.2)
         prompt = f"""SEOプロとして、以下の内容から120〜145文字の日本語meta descriptionを作成してください。
         ・社名は「{company}」で統一。
         ・最後は句点「。」で完結。
@@ -85,7 +86,7 @@ def generate_meta(model, url, title, body, company):
 if login_check():
     apply_custom_css()
     st.title("🚀 プロ仕様 SEO Meta Generator")
-    st.caption("Advanced Stability Mode / ログイン済み")
+    st.caption("XML Sitemap & TXT List Compatible / ログイン済み")
 
     with st.sidebar:
         st.header("⚙️ 設定")
@@ -93,8 +94,7 @@ if login_check():
         st.divider()
         target_company = st.text_input(
             "社名の指定 (空欄ならAIが自動判定)", 
-            placeholder="例：株式会社サンプル",
-            help="入力すると、全ページでこの名称を正確に使用します。空欄時はサイト内から自動抽出します。"
+            placeholder="例：株式会社サンプル"
         )
         st.divider()
         st.header("🔒 認証")
@@ -107,13 +107,24 @@ if login_check():
             del st.session_state["password_correct"]
             st.rerun()
 
-    uploaded_file = st.file_uploader("sitemap.xml をアップロード", type="xml")
+    # 【修正】 typeに "txt" を追加
+    uploaded_file = st.file_uploader("URLリストをアップロード (.xml または .txt)", type=["xml", "txt"])
 
     if uploaded_file and api_key:
         model = get_best_model(api_key)
-        soup_sitemap = BeautifulSoup(uploaded_file, 'xml')
-        urls = [loc.text.strip() for loc in soup_sitemap.find_all('loc')]
-        
+        urls = []
+
+        # --- ファイル形式に応じた解析 ---
+        if uploaded_file.name.endswith(".xml"):
+            # サイトマップ(XML)の解析
+            soup_sitemap = BeautifulSoup(uploaded_file, 'xml')
+            urls = [loc.text.strip() for loc in soup_sitemap.find_all('loc')]
+        elif uploaded_file.name.endswith(".txt"):
+            # テキストファイルの解析（1行1URL）
+            raw_text = uploaded_file.read().decode("utf-8")
+            # 改行で分割し、空行や前後のスペースを除去
+            urls = [line.strip() for line in raw_text.splitlines() if line.strip().startswith("http")]
+
         if urls and model:
             st.info(f"{len(urls)} 件のURLを検出しました。")
             
@@ -123,7 +134,6 @@ if login_check():
                 
                 with st.status("SEO解析および並列生成を実行中...", expanded=True) as status:
                     with requests.Session() as session:
-                        # 会社名の自動判定ロジック
                         final_company = target_company
                         if not final_company:
                             st.write("🔍 サイト情報を解析して社名を特定中...")
@@ -146,7 +156,6 @@ if login_check():
                             except Exception as e:
                                 return {"URL": url, "タイトル": "処理エラー", "結果": str(e), "文字数": 0}
 
-                        # 安定性を考慮し並列数3で実行
                         with ThreadPoolExecutor(max_workers=3) as executor:
                             future_to_url = {executor.submit(process_task, url): url for url in urls}
                             for i, future in enumerate(as_completed(future_to_url)):
@@ -157,7 +166,7 @@ if login_check():
                 
                 status.update(label="✨ すべての処理が完了しました！", state="complete", expanded=False)
 
-                # --- アプリ画面の表示 ---
+                # 結果表示
                 st.write("### 📋 生成結果サマリー")
                 html_table = "<table class='report-table'><tr><th style='width:25%'>URL</th><th style='width:20%'>タイトル</th><th style='width:45%'>生成結果</th><th style='width:10%'>文字数</th></tr>"
                 for r in results:
@@ -173,7 +182,7 @@ if login_check():
                             st.markdown(f"**{r['タイトル']}**")
                             st.code(r['結果'], language=None)
 
-                # --- ダウンロード用HTML（コピーボタン機能付き） ---
+                # ダウンロード用HTML
                 html_rows_dl = ""
                 for idx, r in enumerate(results):
                     html_rows_dl += f"""
@@ -182,47 +191,37 @@ if login_check():
                         <td>{r['タイトル']}</td>
                         <td>
                             <span id="desc-{idx}">{r['結果']}</span><br>
-                            <button class="copy-btn" onclick="copyText('desc-{idx}', this)">コピー</button>
+                            <button class="copy-btn" onclick="copyText('desc-{idx}', this)" style="background:#28a745;color:white;border:none;border-radius:3px;padding:5px 10px;cursor:pointer;font-size:12px;margin-top:5px;">コピー</button>
                         </td>
                         <td style="text-align:center;">{r['文字数']}</td>
                     </tr>"""
 
                 full_html = f"""
                 <html><head><meta charset='UTF-8'>
-                <title>SEO Meta Report</title>
                 <style>
-                    body {{ font-family: sans-serif; padding: 30px; color: #333; }}
+                    body {{ font-family: sans-serif; padding: 20px; color: #333; }}
                     table {{ width: 100%; border-collapse: collapse; margin-top: 20px; table-layout: fixed; }}
                     th {{ background: #007bff; color: white; padding: 12px; text-align: left; }}
                     td {{ border: 1px solid #ddd; padding: 12px; vertical-align: top; word-wrap: break-word; }}
                     tr:nth-child(even) {{ background-color: #f9f9f9; }}
-                    .copy-btn {{ 
-                        margin-top: 8px; padding: 5px 10px; cursor: pointer; 
-                        background: #28a745; color: white; border: none; border-radius: 3px; font-size: 12px;
-                    }}
-                    a {{ color: #007bff; text-decoration: none; }}
                 </style>
                 <script>
                     function copyText(id, btn) {{
                         var text = document.getElementById(id).innerText;
                         navigator.clipboard.writeText(text).then(function() {{
-                            var original = btn.innerText;
                             btn.innerText = "✅ コピー完了";
-                            btn.style.background = "#6c757d";
-                            setTimeout(function() {{ 
-                                btn.innerText = original; 
-                                btn.style.background = "#28a745";
-                            }}, 2000);
+                            setTimeout(function() {{ btn.innerText = "コピー"; }}, 2000);
                         }});
                     }}
                 </script>
                 </head><body>
                     <h1>SEO Meta Description Report</h1>
-                    <p>生成日時: {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
                     <table>
                         <tr><th style="width:20%;">URL</th><th style="width:20%;">タイトル</th><th style="width:50%;">生成結果</th><th style="width:10%;">文字数</th></tr>
                         {html_rows_dl}
                     </table>
                 </body></html>"""
                 
-                st.download_button("コピー機能付きレポートを保存", full_html, "description_report.html", "text/html")
+                st.download_button("レポート（HTML）を保存", full_html, "description_report.html", "text/html")
+        else:
+            st.error("ファイル内に有効なURLが見つかりませんでした。")
