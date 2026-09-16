@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import requests
 from requests.auth import HTTPBasicAuth
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 import time
@@ -11,7 +13,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # --- 基本設定 ---
 st.set_page_config(page_title="Professional SEO Meta Generator", layout="wide")
 
-# カスタムCSS：横スクロールを防止し、文章を枠内で適切に改行
 def apply_custom_css():
     st.markdown("""
         <style>
@@ -41,7 +42,6 @@ def login_check():
 # --- 2. 処理関数群 ---
 
 def get_best_model(api_key):
-    """APIから利用可能なモデルを動的に取得して404を回避"""
     try:
         genai.configure(api_key=api_key)
         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
@@ -53,17 +53,44 @@ def get_best_model(api_key):
         st.error(f"モデル取得エラー: {e}")
         return None
 
+def create_robust_session():
+    """リトライ機能を備えたセッションを作成"""
+    session = requests.Session()
+    retries = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[500, 502, 503, 504],
+        raise_on_status=False
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
 def scrape_page(url, session, auth):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
+    }
     try:
-        res = session.get(url, headers=headers, auth=auth, timeout=12)
+        res = session.get(url, headers=headers, auth=auth, timeout=(20, 30))
         res.encoding = res.apparent_encoding
-        if res.status_code != 200: return "取得失敗", f"HTTP {res.status_code}"
+        if res.status_code != 200:
+            return "取得失敗", f"HTTP {res.status_code}"
         soup = BeautifulSoup(res.text, 'html.parser')
         title = (soup.title.string or "タイトルなし").strip()
-        for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
+        for s in soup(["script", "style", "nav", "footer", "header"]):
+            s.decompose()
         body = soup.get_text(separator=' ', strip=True)[:1200]
         return title, body
+    except requests.exceptions.ConnectTimeout:
+        return "取得失敗", "接続タイムアウト (サーバー接続待機時間を超過)"
+    except requests.exceptions.ReadTimeout:
+        return "取得失敗", "応答タイムアウト (サイト読み込み待機時間を超過)"
     except Exception as e:
         return "取得失敗", str(e)
 
@@ -86,7 +113,7 @@ def generate_meta(model, url, title, body, company):
 if login_check():
     apply_custom_css()
     st.title("🚀 プロ仕様 SEO Meta Generator")
-    st.caption("XML Sitemap & TXT List Compatible / ログイン済み")
+    st.caption("Robust Connection Mode / ログイン済み")
 
     with st.sidebar:
         st.header("⚙️ 設定")
@@ -107,22 +134,17 @@ if login_check():
             del st.session_state["password_correct"]
             st.rerun()
 
-    # 【修正】 typeに "txt" を追加
     uploaded_file = st.file_uploader("URLリストをアップロード (.xml または .txt)", type=["xml", "txt"])
 
     if uploaded_file and api_key:
         model = get_best_model(api_key)
         urls = []
 
-        # --- ファイル形式に応じた解析 ---
         if uploaded_file.name.endswith(".xml"):
-            # サイトマップ(XML)の解析
             soup_sitemap = BeautifulSoup(uploaded_file, 'xml')
             urls = [loc.text.strip() for loc in soup_sitemap.find_all('loc')]
         elif uploaded_file.name.endswith(".txt"):
-            # テキストファイルの解析（1行1URL）
             raw_text = uploaded_file.read().decode("utf-8")
-            # 改行で分割し、空行や前後のスペースを除去
             urls = [line.strip() for line in raw_text.splitlines() if line.strip().startswith("http")]
 
         if urls and model:
@@ -133,40 +155,45 @@ if login_check():
                 results = []
                 
                 with st.status("SEO解析および並列生成を実行中...", expanded=True) as status:
-                    with requests.Session() as session:
-                        final_company = target_company
-                        if not final_company:
-                            st.write("🔍 サイト情報を解析して社名を特定中...")
-                            t, b = scrape_page(urls[0], session, auth)
+                    session = create_robust_session()
+                    
+                    final_company = target_company
+                    if not final_company:
+                        st.write("🔍 サイト情報を解析して社名を特定中...")
+                        t, b = scrape_page(urls[0], session, auth)
+                        if t != "取得失敗":
                             try:
                                 res_name = model.generate_content(f"以下から正式社名のみ抽出せよ：{t} {b}")
                                 final_company = res_name.text.strip()
                                 st.write(f"✅ 社名を「{final_company}」に決定しました。")
-                            except: final_company = "貴社"
+                            except:
+                                final_company = "貴社"
+                        else:
+                            final_company = "貴社"
 
-                        st.write("🚀 各ページのディスクリプションを生成中...")
-                        progress_bar = st.progress(0)
-                        
-                        def process_task(url):
-                            try:
-                                t, b = scrape_page(url, session, auth)
-                                if t == "取得失敗": return {"URL": url, "タイトル": t, "結果": b, "文字数": 0}
-                                desc = generate_meta(model, url, t, b, final_company)
-                                return {"URL": url, "タイトル": t, "結果": desc, "文字数": len(desc)}
-                            except Exception as e:
-                                return {"URL": url, "タイトル": "処理エラー", "結果": str(e), "文字数": 0}
+                    st.write("🚀 各ページのディスクリプションを生成中...")
+                    progress_bar = st.progress(0)
+                    
+                    def process_task(url):
+                        try:
+                            t, b = scrape_page(url, session, auth)
+                            if t == "取得失敗":
+                                return {"URL": url, "タイトル": t, "結果": b, "文字数": 0}
+                            desc = generate_meta(model, url, t, b, final_company)
+                            return {"URL": url, "タイトル": t, "結果": desc, "文字数": len(desc)}
+                        except Exception as e:
+                            return {"URL": url, "タイトル": "処理エラー", "結果": str(e), "文字数": 0}
 
-                        with ThreadPoolExecutor(max_workers=3) as executor:
-                            future_to_url = {executor.submit(process_task, url): url for url in urls}
-                            for i, future in enumerate(as_completed(future_to_url)):
-                                res = future.result()
-                                results.append(res)
-                                progress_bar.progress((i + 1) / len(urls))
-                                st.write(f"完了 ({i+1}/{len(urls)}): {res['URL']}")
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        future_to_url = {executor.submit(process_task, url): url for url in urls}
+                        for i, future in enumerate(as_completed(future_to_url)):
+                            res = future.result()
+                            results.append(res)
+                            progress_bar.progress((i + 1) / len(urls))
+                            st.write(f"完了 ({i+1}/{len(urls)}): {res['URL']}")
                 
                 status.update(label="✨ すべての処理が完了しました！", state="complete", expanded=False)
 
-                # 結果表示
                 st.write("### 📋 生成結果サマリー")
                 html_table = "<table class='report-table'><tr><th style='width:25%'>URL</th><th style='width:20%'>タイトル</th><th style='width:45%'>生成結果</th><th style='width:10%'>文字数</th></tr>"
                 for r in results:
@@ -182,7 +209,6 @@ if login_check():
                             st.markdown(f"**{r['タイトル']}**")
                             st.code(r['結果'], language=None)
 
-                # ダウンロード用HTML
                 html_rows_dl = ""
                 for idx, r in enumerate(results):
                     html_rows_dl += f"""
@@ -209,8 +235,9 @@ if login_check():
                     function copyText(id, btn) {{
                         var text = document.getElementById(id).innerText;
                         navigator.clipboard.writeText(text).then(function() {{
+                            var original = btn.innerText;
                             btn.innerText = "✅ コピー完了";
-                            setTimeout(function() {{ btn.innerText = "コピー"; }}, 2000);
+                            setTimeout(function() {{ btn.innerText = original; }}, 2000);
                         }});
                     }}
                 </script>
