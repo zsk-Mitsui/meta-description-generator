@@ -49,18 +49,15 @@ def get_candidate_models(api_key):
         genai.configure(api_key=api_key)
         all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
-        # 安定していて無料枠制限が緩やかな順に並べる
         preferred_order = [
             "models/gemini-2.0-flash",
             "models/gemini-2.0-flash-lite",
-            "models/gemini-1.5-flash-latest",
             "models/gemini-1.5-flash",
             "models/gemini-3.8-flash"
         ]
         
         candidates = [m for m in preferred_order if m in all_models]
-        if not candidates:
-            # 見つからない場合は利用可能なflashモデルを追加
+        if not candidates and all_models:
             candidates = [m for m in all_models if "flash" in m]
         if not candidates and all_models:
             candidates = [all_models[0]]
@@ -78,7 +75,6 @@ def scrape_page_fast(url, session, auth):
         "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
     }
     
-    # Jina AI Reader (最長3秒)
     try:
         jina_url = f"https://r.jina.ai/{url}"
         res = requests.get(jina_url, timeout=3)
@@ -90,7 +86,6 @@ def scrape_page_fast(url, session, auth):
     except Exception:
         pass
 
-    # 直接アクセス (最長2秒)
     try:
         res = session.get(url, headers=headers, auth=auth, timeout=(1.5, 2))
         if res.status_code == 200:
@@ -108,43 +103,37 @@ def scrape_page_fast(url, session, auth):
     return "URL情報から推測", f"対象URL: {path_hint} の内容に合わせたSEOディスクリプションを作成してください。"
 
 def generate_meta_resilient(models, url, title, body, company, status_placeholder):
-    """複数モデル候補の順次フォールバック＋429自動待機リトライ"""
+    """安全停止装置付きの生成関数"""
     prompt = f"""SEOプロとして、以下の内容から120〜145文字の日本語meta descriptionを作成してください。
 ・社名は「{company}」で統一。
 ・最後は句点「。」で完結。
 ・本文のみ出力し、注釈や文字数カウントは一切含めない。
 URL: {url} / タイトル: {title} / 内容: {body}"""
 
-    last_error = ""
-
     for model_obj in models:
         model_name = getattr(model_obj, "model_name", "model")
-        for attempt in range(2):
-            try:
-                response = model_obj.generate_content(prompt, request_options={"timeout": 15})
-                text = response.text.strip()
-                clean_text = re.sub(r'[\(（].*?文字[\)）]', '', text).strip()
-                return clean_text
-            except Exception as e:
-                err_str = str(e)
-                last_error = f"[{model_name}] {err_str}"
+        try:
+            response = model_obj.generate_content(prompt, request_options={"timeout": 15})
+            text = response.text.strip()
+            return re.sub(r'[\(（].*?文字[\)）]', '', text).strip()
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str:
+                match = re.search(r'seconds:\s*(\d+)', err_str)
+                wait_sec = int(match.group(1)) if match else 20
                 
-                if "429" in err_str:
-                    # APIが指定する待機秒数を取得（見つからなければ20秒）
-                    wait_sec = 20
-                    match = re.search(r'seconds:\s*(\d+)', err_str)
-                    if match:
-                        wait_sec = int(match.group(1)) + 2
-                    
-                    status_placeholder.write(f"⏳ レート制限回避のため {wait_sec}秒 待機して再試行中... ({model_name})")
-                    time.sleep(wait_sec)
-                elif "404" in err_str:
-                    # 404モデルエラーなら即座に次のモデル候補へ
-                    break
-                else:
-                    time.sleep(2)
+                # 60秒以上の待機指示は1日の利用上限（RPD）超過と判定して即座に終了
+                if wait_sec > 60:
+                    return f"無料枠の「1日の利用上限」に達しました（{wait_sec // 3600}時間後にリセット）。別アカウントのキーをご利用ください。"
+                
+                status_placeholder.write(f"⏳ レート制限回避のため {wait_sec}秒 待機中... ({model_name})")
+                time.sleep(wait_sec + 2)
+            elif "404" in err_str:
+                continue
+            else:
+                return f"AI生成エラー: {err_str}"
 
-    return f"AI生成エラー: {last_error}"
+    return "AI生成エラー: 利用可能なモデルがありませんでした。APIキーをご確認ください。"
 
 # --- 3. メインアプリ実行 ---
 
@@ -212,9 +201,12 @@ if login_check():
                         step_text.write(f"✅ 完了 ({i+1}/{len(urls)}): {url}")
                         progress_bar.progress((i + 1) / len(urls))
                         
-                        # 無料枠対策の間隔待機
+                        # 1日の上限エラーが出た場合は即時停止
+                        if "1日の利用上限" in desc:
+                            break
+
                         if i < len(urls) - 1:
-                            time.sleep(15)
+                            time.sleep(13)
                 
                 status.update(label="✨ すべての処理が完了しました！", state="complete", expanded=False)
 
