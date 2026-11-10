@@ -43,57 +43,60 @@ def login_check():
 
 # --- 2. 処理関数群 ---
 
-def get_candidate_models(api_key):
-    """利用可能なモデル候補リストを取得"""
+def get_best_model(api_key):
+    """利用可能な最新安定モデルを安全に自動取得"""
     try:
         genai.configure(api_key=api_key)
         all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
-        preferred_order = [
+        priority = [
             "models/gemini-2.0-flash",
-            "models/gemini-2.0-flash-lite",
             "models/gemini-1.5-flash",
-            "models/gemini-3.8-flash"
+            "models/gemini-2.5-flash",
+            "models/gemini-pro"
         ]
-        
-        candidates = [m for m in preferred_order if m in all_models]
-        if not candidates and all_models:
-            candidates = [m for m in all_models if "flash" in m]
-        if not candidates and all_models:
-            candidates = [all_models[0]]
-            
-        return [genai.GenerativeModel(m) for m in candidates]
+        for p in priority:
+            if p in all_models:
+                return genai.GenerativeModel(p)
+                
+        for m in all_models:
+            if "flash" in m:
+                return genai.GenerativeModel(m)
+                
+        return genai.GenerativeModel(all_models[0]) if all_models else None
     except Exception as e:
-        st.error(f"モデル初期化エラー: {e}")
-        return []
+        st.error(f"モデル取得エラー: {e}")
+        return None
 
 def scrape_page_fast(url, session, auth):
-    """最長3秒で強制打ち切りするスクレイピング"""
+    """安定して本文を取得するスクレイピング"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
     }
     
+    # ルート1: Jina AI Reader
     try:
         jina_url = f"https://r.jina.ai/{url}"
-        res = requests.get(jina_url, timeout=3)
+        res = requests.get(jina_url, timeout=5)
         if res.status_code == 200 and len(res.text) > 50:
             lines = [l.strip() for l in res.text.splitlines() if l.strip()]
             title = lines[0].replace("Title:", "").strip() if lines else "ページ情報"
-            body = " ".join(lines[1:])[:800]
+            body = " ".join(lines[1:])[:1000]
             return title, body
     except Exception:
         pass
 
+    # ルート2: 直接アクセス
     try:
-        res = session.get(url, headers=headers, auth=auth, timeout=(1.5, 2))
+        res = session.get(url, headers=headers, auth=auth, timeout=(3, 5))
         if res.status_code == 200:
-            res.encoding = 'utf-8'
+            res.encoding = 'utf-8' if res.encoding and 'utf' in res.encoding.lower() else res.apparent_encoding
             soup = BeautifulSoup(res.text, 'html.parser')
             title = (soup.title.string or "ページ情報").strip()
             for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
-            body = soup.get_text(separator=' ', strip=True)[:800]
+            body = soup.get_text(separator=' ', strip=True)[:1000]
             if len(body) > 30:
                 return title, body
     except Exception:
@@ -102,38 +105,26 @@ def scrape_page_fast(url, session, auth):
     path_hint = url.split("//")[-1]
     return "URL情報から推測", f"対象URL: {path_hint} の内容に合わせたSEOディスクリプションを作成してください。"
 
-def generate_meta_resilient(models, url, title, body, company, status_placeholder):
-    """安全停止装置付きの生成関数"""
+def generate_meta_stable(model, url, title, body, company):
+    """有料枠向けに最適化した安定生成関数（十分なタイムアウトを確保）"""
     prompt = f"""SEOプロとして、以下の内容から120〜145文字の日本語meta descriptionを作成してください。
 ・社名は「{company}」で統一。
 ・最後は句点「。」で完結。
 ・本文のみ出力し、注釈や文字数カウントは一切含めない。
 URL: {url} / タイトル: {title} / 内容: {body}"""
 
-    for model_obj in models:
-        model_name = getattr(model_obj, "model_name", "model")
+    for attempt in range(2):
         try:
-            response = model_obj.generate_content(prompt, request_options={"timeout": 15})
+            # タイムアウトを60秒に拡大
+            response = model.generate_content(prompt, request_options={"timeout": 60})
             text = response.text.strip()
             return re.sub(r'[\(（].*?文字[\)）]', '', text).strip()
         except Exception as e:
-            err_str = str(e)
-            if "429" in err_str:
-                match = re.search(r'seconds:\s*(\d+)', err_str)
-                wait_sec = int(match.group(1)) if match else 20
-                
-                # 60秒以上の待機指示は1日の利用上限（RPD）超過と判定して即座に終了
-                if wait_sec > 60:
-                    return f"無料枠の「1日の利用上限」に達しました（{wait_sec // 3600}時間後にリセット）。別アカウントのキーをご利用ください。"
-                
-                status_placeholder.write(f"⏳ レート制限回避のため {wait_sec}秒 待機中... ({model_name})")
-                time.sleep(wait_sec + 2)
-            elif "404" in err_str:
-                continue
-            else:
-                return f"AI生成エラー: {err_str}"
-
-    return "AI生成エラー: 利用可能なモデルがありませんでした。APIキーをご確認ください。"
+            if attempt == 1:
+                return f"AI生成エラー: {str(e)}"
+            time.sleep(2)
+            
+    return "AI生成エラー: 応答がありませんでした。"
 
 # --- 3. メインアプリ実行 ---
 
@@ -165,7 +156,7 @@ if login_check():
     uploaded_file = st.file_uploader("URLリストをアップロード (.xml または .txt)", type=["xml", "txt"])
 
     if uploaded_file and api_key:
-        models = get_candidate_models(api_key)
+        model = get_best_model(api_key)
         urls = []
 
         if uploaded_file.name.endswith(".xml"):
@@ -175,7 +166,7 @@ if login_check():
             raw_text = uploaded_file.read().decode("utf-8", errors="ignore")
             urls = [line.strip() for line in raw_text.splitlines() if line.strip().startswith("http")]
 
-        if urls and models:
+        if urls and model:
             st.info(f"{len(urls)} 件のURLを検出しました。")
             
             if st.button("一括生成を開始"):
@@ -193,7 +184,7 @@ if login_check():
                         t, b = scrape_page_fast(url, session, auth)
                         
                         step_text.write(f"🤖 処理中 ({i+1}/{len(urls)}): GeminiでSEOテキスト生成中... {url}")
-                        desc = generate_meta_resilient(models, url, t, b, final_company, step_text)
+                        desc = generate_meta_stable(model, url, t, b, final_company)
                         
                         res = {"URL": url, "タイトル": t, "結果": desc, "文字数": len(desc)}
                         results.append(res)
@@ -201,12 +192,9 @@ if login_check():
                         step_text.write(f"✅ 完了 ({i+1}/{len(urls)}): {url}")
                         progress_bar.progress((i + 1) / len(urls))
                         
-                        # 1日の上限エラーが出た場合は即時停止
-                        if "1日の利用上限" in desc:
-                            break
-
+                        # 有料枠なので長時間の待機は不要（スムーズな連続処理のためにわずか0.5秒だけ待機）
                         if i < len(urls) - 1:
-                            time.sleep(13)
+                            time.sleep(0.5)
                 
                 status.update(label="✨ すべての処理が完了しました！", state="complete", expanded=False)
 
