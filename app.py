@@ -46,13 +46,29 @@ def login_check():
 # --- 2. 処理関数群 ---
 
 def get_best_model(api_key):
+    """利用可能な最新モデルを安全に自動取得"""
     try:
         genai.configure(api_key=api_key)
-        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        priority = ["models/gemini-1.5-flash", "models/gemini-1.5-pro", "models/gemini-pro"]
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # 最新世代を優先順に指定
+        priority = [
+            "models/gemini-3.8-flash",
+            "models/gemini-2.5-flash",
+            "models/gemini-1.5-flash",
+            "models/gemini-pro"
+        ]
         for p in priority:
-            if p in models: return genai.GenerativeModel(p)
-        return genai.GenerativeModel(models[0]) if models else None
+            if p in available_models:
+                return genai.GenerativeModel(p)
+                
+        # 優先リスト外でも、flash系モデルがあればそれを採用
+        for m in available_models:
+            if "flash" in m:
+                return genai.GenerativeModel(m)
+                
+        # 見つからない場合は利用可能リストの先頭を採用
+        return genai.GenerativeModel(available_models[0]) if available_models else None
     except Exception as e:
         st.error(f"モデル取得エラー: {e}")
         return None
@@ -72,7 +88,7 @@ def scrape_page(url, session, auth):
         "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
     }
     
-    # ルート1: 通常の直接アクセス (タイムアウト5秒)
+    # ルート1: 通常の直接アクセス
     try:
         res = session.get(url, headers=headers, auth=auth, timeout=(5, 10))
         if res.status_code == 200:
@@ -133,7 +149,7 @@ def generate_meta(model, url, title, body, company):
 if login_check():
     apply_custom_css()
     st.title("🚀 プロ仕様 SEO Meta Generator")
-    st.caption("Proxy Fallback Active / ログイン済み")
+    st.caption("Auto Model Selection Active / ログイン済み")
 
     with st.sidebar:
         st.header("⚙️ 設定")
@@ -265,7 +281,11 @@ if login_check():
                         navigator.clipboard.writeText(text).then(function() {{
                             var original = btn.innerText;
                             btn.innerText = "✅ コピー完了";
-                            setTimeout(function() {{ btn.innerText = original; }}, 2000);
+                            btn.style.background = "#6c757d";
+                            setTimeout(function() {{ 
+                                btn.innerText = original; 
+                                btn.style.background = "#28a745";
+                            }}, 2000);
                         }});
                     }}
                 </script>
