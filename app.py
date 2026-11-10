@@ -44,23 +44,24 @@ def login_check():
 # --- 2. 処理関数群 ---
 
 def get_best_model(api_key):
-    """利用可能な最新モデルを安全に自動取得"""
+    """利用可能なモデルを安全に取得"""
     try:
         genai.configure(api_key=api_key)
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
+        # 安定モデル優先順
         priority = [
-            "models/gemini-3.8-flash",
-            "models/gemini-2.5-flash",
             "models/gemini-1.5-flash",
+            "models/gemini-1.5-pro",
             "models/gemini-pro"
         ]
         for p in priority:
             if p in available_models:
                 return genai.GenerativeModel(p)
                 
+        # 優先リストにない場合、利用可能な先頭を採用
         for m in available_models:
-            if "flash" in m:
+            if "flash" in m or "pro" in m:
                 return genai.GenerativeModel(m)
                 
         return genai.GenerativeModel(available_models[0]) if available_models else None
@@ -69,68 +70,62 @@ def get_best_model(api_key):
         return None
 
 def scrape_page_fast(url, session, auth):
-    """通信で止まらない高速スクレイピング（最長4秒で打ち切り）"""
+    """最長3秒で強制打ち切りするスクレイピング"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
     }
     
-    # 試行1: 直接アクセス (タイムアウト短縮)
+    # Jina AI Reader (最長3秒)
     try:
-        res = session.get(url, headers=headers, auth=auth, timeout=(2, 2))
+        jina_url = f"https://r.jina.ai/{url}"
+        res = requests.get(jina_url, timeout=3)
+        if res.status_code == 200 and len(res.text) > 50:
+            lines = [l.strip() for l in res.text.splitlines() if l.strip()]
+            title = lines[0].replace("Title:", "").strip() if lines else "ページ情報"
+            body = " ".join(lines[1:])[:800]
+            return title, body
+    except Exception:
+        pass
+
+    # 直接アクセス (最長2秒)
+    try:
+        res = session.get(url, headers=headers, auth=auth, timeout=(1.5, 2))
         if res.status_code == 200:
-            res.encoding = 'utf-8' if res.encoding and 'utf' in res.encoding.lower() else res.apparent_encoding
+            res.encoding = 'utf-8'
             soup = BeautifulSoup(res.text, 'html.parser')
             title = (soup.title.string or "ページ情報").strip()
             for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
-            body = soup.get_text(separator=' ', strip=True)[:1000]
+            body = soup.get_text(separator=' ', strip=True)[:800]
             if len(body) > 30:
                 return title, body
     except Exception:
         pass
 
-    # 試行2: Jina AI Reader
-    try:
-        jina_url = f"https://r.jina.ai/{url}"
-        res = requests.get(jina_url, timeout=4)
-        if res.status_code == 200 and len(res.text) > 50:
-            lines = [l.strip() for l in res.text.splitlines() if l.strip()]
-            title = lines[0].replace("Title:", "").strip() if lines else "ページ情報"
-            body = " ".join(lines[1:])[:1000]
-            return title, body
-    except Exception:
-        pass
-
-    # どちらも取得できない場合はURL文字列から推測生成へ渡す
     path_hint = url.split("//")[-1]
     return "URL情報から推測", f"対象URL: {path_hint} の内容に合わせたSEOディスクリプションを作成してください。"
 
-def generate_meta_with_retry(model, url, title, body, company, max_retries=2):
+def generate_meta_safe(model, url, title, body, company):
+    """タイムアウト10秒設定付きのAI生成関数"""
     prompt = f"""SEOプロとして、以下の内容から120〜145文字の日本語meta descriptionを作成してください。
 ・社名は「{company}」で統一。
 ・最後は句点「。」で完結。
 ・本文のみ出力し、注釈や文字数カウントは一切含めない。
 URL: {url} / タイトル: {title} / 内容: {body}"""
 
-    for attempt in range(max_retries):
-        try:
-            response = model.generate_content(prompt)
-            text = response.text.strip()
-            return re.sub(r'[\(（].*?文字[\)）]', '', text).strip()
-        except Exception as e:
-            err_str = str(e)
-            if "429" in err_str:
-                wait_time = 16
-                match = re.search(r'seconds:\s*(\d+)', err_str)
-                if match:
-                    wait_time = int(match.group(1)) + 2
-                time.sleep(wait_time)
-            elif attempt == max_retries - 1:
-                return f"AI生成エラー: {err_str}"
-            else:
-                time.sleep(2)
-    return "AI生成エラー: 待機上限を超過しました。"
+    try:
+        # request_options で10秒タイムアウトを強制
+        response = model.generate_content(prompt, request_options={"timeout": 10})
+        text = response.text.strip()
+        return re.sub(r'[\(（].*?文字[\)）]', '', text).strip()
+    except Exception as e:
+        err = str(e)
+        if "429" in err:
+            return "AI生成エラー: レート制限(429)。少し時間をおいて再実行してください。"
+        elif "timeout" in err.lower():
+            return "AI生成エラー: Google APIの応答が10秒以内にありませんでした(タイムアウト)。"
+        return f"AI生成エラー: {err}"
 
 # --- 3. メインアプリ実行 ---
 
@@ -146,7 +141,7 @@ if login_check():
             "社名の指定 (空欄なら「貴社」で生成)", 
             value="",
             placeholder="例：株式会社サンプル",
-            help="指定した社名でディスクリプションを作成します。空欄の場合は「貴社」で生成されます。"
+            help="指定した社名でディスクリプションを作成します。"
         )
         st.divider()
         st.header("🔒 認証")
@@ -187,11 +182,10 @@ if login_check():
                     for i, url in enumerate(urls):
                         step_text = st.empty()
                         step_text.write(f"⏳ 処理中 ({i+1}/{len(urls)}): ページ情報取得中... {url}")
-                        
                         t, b = scrape_page_fast(url, session, auth)
                         
                         step_text.write(f"🤖 処理中 ({i+1}/{len(urls)}): GeminiでSEOテキスト生成中... {url}")
-                        desc = generate_meta_with_retry(model, url, t, b, final_company)
+                        desc = generate_meta_safe(model, url, t, b, final_company)
                         
                         res = {"URL": url, "タイトル": t, "結果": desc, "文字数": len(desc)}
                         results.append(res)
@@ -199,6 +193,7 @@ if login_check():
                         step_text.write(f"✅ 完了 ({i+1}/{len(urls)}): {url}")
                         progress_bar.progress((i + 1) / len(urls))
                         
+                        # 複数件ある場合のみ無料枠レート制限（5回/分）対策で待機
                         if i < len(urls) - 1:
                             time.sleep(13)
                 
