@@ -13,8 +13,13 @@ import re
 st.set_page_config(page_title="プロ仕様 SEO メタジェネレーター", layout="wide")
 
 def apply_custom_css():
+    # Chrome等のブラウザ自動翻訳を強制無効化するmetaタグとCSS
     st.markdown("""
+        <meta name="google" content="notranslate">
         <style>
+        html, body, [class*="css"] {
+            -webkit-font-smoothing: antialiased;
+        }
         .report-table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: fixed; }
         .report-table th { background-color: #007bff; color: white; padding: 12px; text-align: left; }
         .report-table td { border: 1px solid #ddd; padding: 12px; vertical-align: top; word-wrap: break-word; white-space: normal; }
@@ -69,14 +74,6 @@ def get_best_model(api_key):
         st.error(f"モデル取得エラー: {e}")
         return None
 
-def create_robust_session():
-    session = requests.Session()
-    retries = Retry(total=1, backoff_factor=1, status_forcelist=[500, 502, 503, 504], raise_on_status=False)
-    adapter = HTTPAdapter(max_retries=retries)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    return session
-
 def scrape_page(url, session, auth):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -84,28 +81,27 @@ def scrape_page(url, session, auth):
         "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
     }
     
-    # ルート1: 直接アクセス (タイムアウトを短縮しスタック防止)
+    # ルート1: Jina AI Reader（最も安定してテキスト化可能）
     try:
-        res = session.get(url, headers=headers, auth=auth, timeout=(3, 6))
-        if res.status_code == 200:
-            res.encoding = 'utf-8' if res.encoding and 'utf' in res.encoding.lower() else res.apparent_encoding
-            soup = BeautifulSoup(res.text, 'html.parser')
-            title = (soup.title.string or "タイトルなし").strip()
-            for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
-            body = soup.get_text(separator=' ', strip=True)[:1000]
+        jina_url = f"https://r.jina.ai/{url}"
+        res = requests.get(jina_url, timeout=5)
+        if res.status_code == 200 and len(res.text) > 50:
+            lines = [l.strip() for l in res.text.splitlines() if l.strip()]
+            title = lines[0].replace("Title:", "").strip() if lines else "ページ情報"
+            body = " ".join(lines[1:])[:1000]
             return title, body
     except Exception:
         pass
 
-    # ルート2: Jina AI Reader
+    # ルート2: 通常直接アクセス (タイムアウト極小3秒)
     try:
-        jina_url = f"https://r.jina.ai/{url}"
-        res = requests.get(jina_url, timeout=8)
+        res = session.get(url, headers=headers, auth=auth, timeout=(2, 3))
         if res.status_code == 200:
-            content = res.text
-            lines = [l.strip() for l in content.splitlines() if l.strip()]
-            title = lines[0].replace("Title:", "").strip() if lines else "タイトルなし"
-            body = " ".join(lines[1:])[:1000]
+            res.encoding = 'utf-8'
+            soup = BeautifulSoup(res.text, 'html.parser')
+            title = (soup.title.string or "ページ情報").strip()
+            for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
+            body = soup.get_text(separator=' ', strip=True)[:1000]
             return title, body
     except Exception:
         pass
@@ -113,21 +109,21 @@ def scrape_page(url, session, auth):
     # ルート3: AllOrigins
     try:
         proxy_url = f"https://api.allorigins.win/raw?url={requests.utils.quote(url)}"
-        res = requests.get(proxy_url, timeout=8)
+        res = requests.get(proxy_url, timeout=5)
         if res.status_code == 200:
             res.encoding = 'utf-8'
             soup = BeautifulSoup(res.text, 'html.parser')
-            title = (soup.title.string or "タイトルなし").strip()
+            title = (soup.title.string or "ページ情報").strip()
             for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
             body = soup.get_text(separator=' ', strip=True)[:1000]
             return title, body
     except Exception:
         pass
 
-    return "取得失敗", "ページ内容の取得に失敗しました"
+    # 取得失敗時はURLのパス自体をヒントとして渡すフォールバック
+    return "URL解析モード", f"対象URL: {url} のページ内容に基づくディスクリプションを推測生成してください。"
 
 def generate_meta_with_retry(model, url, title, body, company, max_retries=3):
-    """429レート制限時に自動待機してリトライする生成関数"""
     prompt = f"""SEOプロとして、以下の内容から120〜145文字の日本語meta descriptionを作成してください。
 ・社名は「{company}」で統一。
 ・最後は句点「。」で完結。
@@ -150,23 +146,23 @@ URL: {url} / タイトル: {title} / 内容: {body}"""
             elif attempt == max_retries - 1:
                 return f"AI生成エラー: {err_str}"
             else:
-                time.sleep(3)
-    return "AI生成エラー: レート制限の待機回数を超過しました。"
+                time.sleep(2)
+    return "AI生成エラー: 待機上限を超過しました。"
 
 # --- 3. メインアプリ実行 ---
 
 if login_check():
     apply_custom_css()
     st.title("🚀 プロ仕様 SEO メタジェネレーター")
-    st.caption("レート制限・文字コード最適化済み / ログイン中")
 
     with st.sidebar:
         st.header("⚙️ 設定")
         api_key = st.secrets.get("GEMINI_API_KEY") or st.text_input("Gemini API Key", type="password")
         st.divider()
         target_company = st.text_input(
-            "社名の指定 (空欄ならAIが自動判定)", 
-            placeholder="例：株式会社サンプル"
+            "社名の指定", 
+            value="マイマイシーサー",
+            help="指定した社名でディスクリプションを作成します。"
         )
         st.divider()
         st.header("🔒 認証")
@@ -198,45 +194,26 @@ if login_check():
             if st.button("一括生成を開始"):
                 auth = HTTPBasicAuth(b_user, b_pw) if b_user and b_pw else None
                 results = []
+                session = requests.Session()
                 
-                with st.status("SEO解析および生成を実行中...", expanded=True) as status:
-                    session = create_robust_session()
-                    
-                    # 社名の判定（手動指定があればそれを最優先）
-                    final_company = target_company
-                    if not final_company:
-                        st.write("🔍 サイト情報を解析中...")
-                        try:
-                            t, b = scrape_page(urls[0], session, auth)
-                            if t != "取得失敗":
-                                res_name = model.generate_content(f"以下から正式社名のみ抽出せよ（名称のみ出力）：{t} {b}")
-                                final_company = res_name.text.strip()
-                                st.write(f"✅ 社名を「{final_company}」に決定しました。")
-                                time.sleep(3)
-                            else:
-                                final_company = "貴社"
-                        except Exception:
-                            final_company = "貴社"
-
-                    st.write("🚀 各ページのディスクリプションを生成中...")
+                with st.status("SEOディスクリプションを生成中...", expanded=True) as status:
+                    final_company = target_company if target_company else "貴社"
                     progress_bar = st.progress(0)
                     
                     for i, url in enumerate(urls):
                         try:
+                            # タイムアウト等で止まらない高速フェッチ
                             t, b = scrape_page(url, session, auth)
-                            if t == "取得失敗":
-                                res = {"URL": url, "タイトル": t, "結果": b, "文字数": 0}
-                            else:
-                                desc = generate_meta_with_retry(model, url, t, b, final_company)
-                                res = {"URL": url, "タイトル": t, "結果": desc, "文字数": len(desc)}
+                            desc = generate_meta_with_retry(model, url, t, b, final_company)
+                            res = {"URL": url, "タイトル": t, "結果": desc, "文字数": len(desc)}
                         except Exception as e:
                             res = {"URL": url, "タイトル": "処理エラー", "結果": str(e), "文字数": 0}
 
                         results.append(res)
                         progress_bar.progress((i + 1) / len(urls))
-                        st.write(f"完了 ({i+1}/{len(urls)}): {url}")
+                        st.write(f"生成完了 ({i+1}/{len(urls)}): {url}")
                         
-                        # 無料枠（5回/分）を守るため待機
+                        # 複数件ある場合のみレート制限（5回/分）対策で待機
                         if i < len(urls) - 1:
                             time.sleep(13)
                 
@@ -273,7 +250,7 @@ if login_check():
                     </tr>"""
 
                 full_html = f"""
-                <html><head><meta charset='UTF-8'>
+                <html translate="no"><head><meta charset='UTF-8'><meta name="google" content="notranslate">
                 <title>SEO Meta Report</title>
                 <style>
                     body {{ font-family: sans-serif; padding: 30px; color: #333; }}
