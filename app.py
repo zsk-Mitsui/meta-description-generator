@@ -10,7 +10,7 @@ import time
 import re
 
 # --- 基本設定 ---
-st.set_page_config(page_title="Professional SEO Meta Generator", layout="wide")
+st.set_page_config(page_title="プロ仕様 SEO メタジェネレーター", layout="wide")
 
 def apply_custom_css():
     st.markdown("""
@@ -71,7 +71,7 @@ def get_best_model(api_key):
 
 def create_robust_session():
     session = requests.Session()
-    retries = Retry(total=2, backoff_factor=1, status_forcelist=[500, 502, 503, 504], raise_on_status=False)
+    retries = Retry(total=1, backoff_factor=1, status_forcelist=[500, 502, 503, 504], raise_on_status=False)
     adapter = HTTPAdapter(max_retries=retries)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
@@ -84,15 +84,15 @@ def scrape_page(url, session, auth):
         "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
     }
     
-    # ルート1: 直接アクセス
+    # ルート1: 直接アクセス (タイムアウトを短縮しスタック防止)
     try:
-        res = session.get(url, headers=headers, auth=auth, timeout=(5, 10))
+        res = session.get(url, headers=headers, auth=auth, timeout=(3, 6))
         if res.status_code == 200:
-            res.encoding = res.apparent_encoding
+            res.encoding = 'utf-8' if res.encoding and 'utf' in res.encoding.lower() else res.apparent_encoding
             soup = BeautifulSoup(res.text, 'html.parser')
             title = (soup.title.string or "タイトルなし").strip()
             for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
-            body = soup.get_text(separator=' ', strip=True)[:1200]
+            body = soup.get_text(separator=' ', strip=True)[:1000]
             return title, body
     except Exception:
         pass
@@ -100,12 +100,12 @@ def scrape_page(url, session, auth):
     # ルート2: Jina AI Reader
     try:
         jina_url = f"https://r.jina.ai/{url}"
-        res = requests.get(jina_url, timeout=12)
+        res = requests.get(jina_url, timeout=8)
         if res.status_code == 200:
             content = res.text
             lines = [l.strip() for l in content.splitlines() if l.strip()]
             title = lines[0].replace("Title:", "").strip() if lines else "タイトルなし"
-            body = " ".join(lines[1:])[:1200]
+            body = " ".join(lines[1:])[:1000]
             return title, body
     except Exception:
         pass
@@ -113,25 +113,25 @@ def scrape_page(url, session, auth):
     # ルート3: AllOrigins
     try:
         proxy_url = f"https://api.allorigins.win/raw?url={requests.utils.quote(url)}"
-        res = requests.get(proxy_url, timeout=12)
+        res = requests.get(proxy_url, timeout=8)
         if res.status_code == 200:
-            res.encoding = res.apparent_encoding
+            res.encoding = 'utf-8'
             soup = BeautifulSoup(res.text, 'html.parser')
             title = (soup.title.string or "タイトルなし").strip()
             for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
-            body = soup.get_text(separator=' ', strip=True)[:1200]
+            body = soup.get_text(separator=' ', strip=True)[:1000]
             return title, body
     except Exception:
         pass
 
-    return "取得失敗", "全ルート接続失敗（サーバー側で海外IP遮断中の可能性）"
+    return "取得失敗", "ページ内容の取得に失敗しました"
 
 def generate_meta_with_retry(model, url, title, body, company, max_retries=3):
     """429レート制限時に自動待機してリトライする生成関数"""
     prompt = f"""SEOプロとして、以下の内容から120〜145文字の日本語meta descriptionを作成してください。
 ・社名は「{company}」で統一。
 ・最後は句点「。」で完結。
-・本文のみ出力し、注釈やカウントは含めない。
+・本文のみ出力し、注釈や文字数カウントは一切含めない。
 URL: {url} / タイトル: {title} / 内容: {body}"""
 
     for attempt in range(max_retries):
@@ -142,7 +142,6 @@ URL: {url} / タイトル: {title} / 内容: {body}"""
         except Exception as e:
             err_str = str(e)
             if "429" in err_str:
-                # 429レート制限にかかった場合、指定秒数または15秒待機して再試行
                 wait_time = 16
                 match = re.search(r'seconds:\s*(\d+)', err_str)
                 if match:
@@ -158,8 +157,8 @@ URL: {url} / タイトル: {title} / 内容: {body}"""
 
 if login_check():
     apply_custom_css()
-    st.title("🚀 プロ仕様 SEO Meta Generator")
-    st.caption("Rate-Limit Optimized Mode / ログイン済み")
+    st.title("🚀 プロ仕様 SEO メタジェネレーター")
+    st.caption("レート制限・文字コード最適化済み / ログイン中")
 
     with st.sidebar:
         st.header("⚙️ 設定")
@@ -176,7 +175,7 @@ if login_check():
         
         st.markdown("<br><br>", unsafe_allow_html=True)
         st.divider()
-        if st.button("🚪 アプリからログアウト", use_container_width=True):
+        if st.button("🚪 ログアウト", use_container_width=True):
             del st.session_state["password_correct"]
             st.rerun()
 
@@ -190,38 +189,38 @@ if login_check():
             soup_sitemap = BeautifulSoup(uploaded_file, 'xml')
             urls = [loc.text.strip() for loc in soup_sitemap.find_all('loc')]
         elif uploaded_file.name.endswith(".txt"):
-            raw_text = uploaded_file.read().decode("utf-8")
+            raw_text = uploaded_file.read().decode("utf-8", errors="ignore")
             urls = [line.strip() for line in raw_text.splitlines() if line.strip().startswith("http")]
 
         if urls and model:
             st.info(f"{len(urls)} 件のURLを検出しました。")
             
-            if st.button("全ページ一括生成を開始"):
+            if st.button("一括生成を開始"):
                 auth = HTTPBasicAuth(b_user, b_pw) if b_user and b_pw else None
                 results = []
                 
                 with st.status("SEO解析および生成を実行中...", expanded=True) as status:
                     session = create_robust_session()
                     
+                    # 社名の判定（手動指定があればそれを最優先）
                     final_company = target_company
                     if not final_company:
-                        st.write("🔍 サイト情報を解析して社名を特定中...")
-                        t, b = scrape_page(urls[0], session, auth)
-                        if t != "取得失敗":
-                            try:
-                                res_name = model.generate_content(f"以下から正式社名のみ抽出せよ：{t} {b}")
+                        st.write("🔍 サイト情報を解析中...")
+                        try:
+                            t, b = scrape_page(urls[0], session, auth)
+                            if t != "取得失敗":
+                                res_name = model.generate_content(f"以下から正式社名のみ抽出せよ（名称のみ出力）：{t} {b}")
                                 final_company = res_name.text.strip()
                                 st.write(f"✅ 社名を「{final_company}」に決定しました。")
-                                time.sleep(3)  # 社名判定直後のレート制限回避待機
-                            except:
+                                time.sleep(3)
+                            else:
                                 final_company = "貴社"
-                        else:
+                        except Exception:
                             final_company = "貴社"
 
                     st.write("🚀 各ページのディスクリプションを生成中...")
                     progress_bar = st.progress(0)
                     
-                    # 無料枠の5 RPM制限を守るため、順次実行＋自動リトライ
                     for i, url in enumerate(urls):
                         try:
                             t, b = scrape_page(url, session, auth)
@@ -237,9 +236,9 @@ if login_check():
                         progress_bar.progress((i + 1) / len(urls))
                         st.write(f"完了 ({i+1}/{len(urls)}): {url}")
                         
-                        # 複数件ある場合、無料枠リミット（5回/分）に引っかからないよう待機
+                        # 無料枠（5回/分）を守るため待機
                         if i < len(urls) - 1:
-                            time.sleep(12)
+                            time.sleep(13)
                 
                 status.update(label="✨ すべての処理が完了しました！", state="complete", expanded=False)
 
