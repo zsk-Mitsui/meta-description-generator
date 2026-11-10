@@ -44,27 +44,11 @@ def login_check():
 # --- 2. 処理関数群 ---
 
 def get_best_model(api_key):
-    """利用可能なモデルを安全に取得"""
+    """最新モデル gemini-3.8-flash を取得"""
     try:
         genai.configure(api_key=api_key)
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # 安定モデル優先順
-        priority = [
-            "models/gemini-1.5-flash",
-            "models/gemini-1.5-pro",
-            "models/gemini-pro"
-        ]
-        for p in priority:
-            if p in available_models:
-                return genai.GenerativeModel(p)
-                
-        # 優先リストにない場合、利用可能な先頭を採用
-        for m in available_models:
-            if "flash" in m or "pro" in m:
-                return genai.GenerativeModel(m)
-                
-        return genai.GenerativeModel(available_models[0]) if available_models else None
+        # APIが指定している gemini-3.8-flash を直接設定
+        return genai.GenerativeModel("models/gemini-3.8-flash")
     except Exception as e:
         st.error(f"モデル取得エラー: {e}")
         return None
@@ -107,7 +91,7 @@ def scrape_page_fast(url, session, auth):
     return "URL情報から推測", f"対象URL: {path_hint} の内容に合わせたSEOディスクリプションを作成してください。"
 
 def generate_meta_safe(model, url, title, body, company):
-    """タイムアウト10秒設定付きのAI生成関数"""
+    """タイムアウト15秒設定付きのAI生成関数"""
     prompt = f"""SEOプロとして、以下の内容から120〜145文字の日本語meta descriptionを作成してください。
 ・社名は「{company}」で統一。
 ・最後は句点「。」で完結。
@@ -115,16 +99,15 @@ def generate_meta_safe(model, url, title, body, company):
 URL: {url} / タイトル: {title} / 内容: {body}"""
 
     try:
-        # request_options で10秒タイムアウトを強制
-        response = model.generate_content(prompt, request_options={"timeout": 10})
+        response = model.generate_content(prompt, request_options={"timeout": 15})
         text = response.text.strip()
         return re.sub(r'[\(（].*?文字[\)）]', '', text).strip()
     except Exception as e:
         err = str(e)
         if "429" in err:
-            return "AI生成エラー: レート制限(429)。少し時間をおいて再実行してください。"
+            return "AI生成エラー: レート制限(429)。15秒ほど待ってから再実行してください。"
         elif "timeout" in err.lower():
-            return "AI生成エラー: Google APIの応答が10秒以内にありませんでした(タイムアウト)。"
+            return "AI生成エラー: Google APIの応答がタイムアウトしました。"
         return f"AI生成エラー: {err}"
 
 # --- 3. メインアプリ実行 ---
