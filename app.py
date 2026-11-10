@@ -2,8 +2,6 @@ import streamlit as st
 import pandas as pd
 import requests
 from requests.auth import HTTPBasicAuth
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 import time
@@ -13,13 +11,9 @@ import re
 st.set_page_config(page_title="プロ仕様 SEO メタジェネレーター", layout="wide")
 
 def apply_custom_css():
-    # Chrome等のブラウザ自動翻訳を強制無効化するmetaタグとCSS
     st.markdown("""
         <meta name="google" content="notranslate">
         <style>
-        html, body, [class*="css"] {
-            -webkit-font-smoothing: antialiased;
-        }
         .report-table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: fixed; }
         .report-table th { background-color: #007bff; color: white; padding: 12px; text-align: left; }
         .report-table td { border: 1px solid #ddd; padding: 12px; vertical-align: top; word-wrap: break-word; white-space: normal; }
@@ -74,17 +68,32 @@ def get_best_model(api_key):
         st.error(f"モデル取得エラー: {e}")
         return None
 
-def scrape_page(url, session, auth):
+def scrape_page_fast(url, session, auth):
+    """通信で止まらない高速スクレイピング（最長4秒で打ち切り）"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
     }
     
-    # ルート1: Jina AI Reader（最も安定してテキスト化可能）
+    # 試行1: 直接アクセス (タイムアウト短縮)
+    try:
+        res = session.get(url, headers=headers, auth=auth, timeout=(2, 2))
+        if res.status_code == 200:
+            res.encoding = 'utf-8' if res.encoding and 'utf' in res.encoding.lower() else res.apparent_encoding
+            soup = BeautifulSoup(res.text, 'html.parser')
+            title = (soup.title.string or "ページ情報").strip()
+            for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
+            body = soup.get_text(separator=' ', strip=True)[:1000]
+            if len(body) > 30:
+                return title, body
+    except Exception:
+        pass
+
+    # 試行2: Jina AI Reader
     try:
         jina_url = f"https://r.jina.ai/{url}"
-        res = requests.get(jina_url, timeout=5)
+        res = requests.get(jina_url, timeout=4)
         if res.status_code == 200 and len(res.text) > 50:
             lines = [l.strip() for l in res.text.splitlines() if l.strip()]
             title = lines[0].replace("Title:", "").strip() if lines else "ページ情報"
@@ -93,37 +102,11 @@ def scrape_page(url, session, auth):
     except Exception:
         pass
 
-    # ルート2: 通常直接アクセス (タイムアウト極小3秒)
-    try:
-        res = session.get(url, headers=headers, auth=auth, timeout=(2, 3))
-        if res.status_code == 200:
-            res.encoding = 'utf-8'
-            soup = BeautifulSoup(res.text, 'html.parser')
-            title = (soup.title.string or "ページ情報").strip()
-            for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
-            body = soup.get_text(separator=' ', strip=True)[:1000]
-            return title, body
-    except Exception:
-        pass
+    # どちらも取得できない場合はURL文字列から推測生成へ渡す
+    path_hint = url.split("//")[-1]
+    return "URL情報から推測", f"対象URL: {path_hint} の内容に合わせたSEOディスクリプションを作成してください。"
 
-    # ルート3: AllOrigins
-    try:
-        proxy_url = f"https://api.allorigins.win/raw?url={requests.utils.quote(url)}"
-        res = requests.get(proxy_url, timeout=5)
-        if res.status_code == 200:
-            res.encoding = 'utf-8'
-            soup = BeautifulSoup(res.text, 'html.parser')
-            title = (soup.title.string or "ページ情報").strip()
-            for s in soup(["script", "style", "nav", "footer", "header"]): s.decompose()
-            body = soup.get_text(separator=' ', strip=True)[:1000]
-            return title, body
-    except Exception:
-        pass
-
-    # 取得失敗時はURLのパス自体をヒントとして渡すフォールバック
-    return "URL解析モード", f"対象URL: {url} のページ内容に基づくディスクリプションを推測生成してください。"
-
-def generate_meta_with_retry(model, url, title, body, company, max_retries=3):
+def generate_meta_with_retry(model, url, title, body, company, max_retries=2):
     prompt = f"""SEOプロとして、以下の内容から120〜145文字の日本語meta descriptionを作成してください。
 ・社名は「{company}」で統一。
 ・最後は句点「。」で完結。
@@ -160,9 +143,10 @@ if login_check():
         api_key = st.secrets.get("GEMINI_API_KEY") or st.text_input("Gemini API Key", type="password")
         st.divider()
         target_company = st.text_input(
-            "社名の指定", 
-            value="マイマイシーサー",
-            help="指定した社名でディスクリプションを作成します。"
+            "社名の指定 (空欄なら「貴社」で生成)", 
+            value="",
+            placeholder="例：株式会社サンプル",
+            help="指定した社名でディスクリプションを作成します。空欄の場合は「貴社」で生成されます。"
         )
         st.divider()
         st.header("🔒 認証")
@@ -197,23 +181,24 @@ if login_check():
                 session = requests.Session()
                 
                 with st.status("SEOディスクリプションを生成中...", expanded=True) as status:
-                    final_company = target_company if target_company else "貴社"
+                    final_company = target_company.strip() if target_company.strip() else "貴社"
                     progress_bar = st.progress(0)
                     
                     for i, url in enumerate(urls):
-                        try:
-                            # タイムアウト等で止まらない高速フェッチ
-                            t, b = scrape_page(url, session, auth)
-                            desc = generate_meta_with_retry(model, url, t, b, final_company)
-                            res = {"URL": url, "タイトル": t, "結果": desc, "文字数": len(desc)}
-                        except Exception as e:
-                            res = {"URL": url, "タイトル": "処理エラー", "結果": str(e), "文字数": 0}
-
-                        results.append(res)
-                        progress_bar.progress((i + 1) / len(urls))
-                        st.write(f"生成完了 ({i+1}/{len(urls)}): {url}")
+                        step_text = st.empty()
+                        step_text.write(f"⏳ 処理中 ({i+1}/{len(urls)}): ページ情報取得中... {url}")
                         
-                        # 複数件ある場合のみレート制限（5回/分）対策で待機
+                        t, b = scrape_page_fast(url, session, auth)
+                        
+                        step_text.write(f"🤖 処理中 ({i+1}/{len(urls)}): GeminiでSEOテキスト生成中... {url}")
+                        desc = generate_meta_with_retry(model, url, t, b, final_company)
+                        
+                        res = {"URL": url, "タイトル": t, "結果": desc, "文字数": len(desc)}
+                        results.append(res)
+                        
+                        step_text.write(f"✅ 完了 ({i+1}/{len(urls)}): {url}")
+                        progress_bar.progress((i + 1) / len(urls))
+                        
                         if i < len(urls) - 1:
                             time.sleep(13)
                 
