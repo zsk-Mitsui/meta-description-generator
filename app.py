@@ -8,7 +8,6 @@ from bs4 import BeautifulSoup
 import google.generativeai as genai
 import time
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- 基本設定 ---
 st.set_page_config(page_title="Professional SEO Meta Generator", layout="wide")
@@ -51,7 +50,6 @@ def get_best_model(api_key):
         genai.configure(api_key=api_key)
         available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
-        # 最新世代を優先順に指定
         priority = [
             "models/gemini-3.8-flash",
             "models/gemini-2.5-flash",
@@ -62,12 +60,10 @@ def get_best_model(api_key):
             if p in available_models:
                 return genai.GenerativeModel(p)
                 
-        # 優先リスト外でも、flash系モデルがあればそれを採用
         for m in available_models:
             if "flash" in m:
                 return genai.GenerativeModel(m)
                 
-        # 見つからない場合は利用可能リストの先頭を採用
         return genai.GenerativeModel(available_models[0]) if available_models else None
     except Exception as e:
         st.error(f"モデル取得エラー: {e}")
@@ -88,7 +84,7 @@ def scrape_page(url, session, auth):
         "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
     }
     
-    # ルート1: 通常の直接アクセス
+    # ルート1: 直接アクセス
     try:
         res = session.get(url, headers=headers, auth=auth, timeout=(5, 10))
         if res.status_code == 200:
@@ -101,7 +97,7 @@ def scrape_page(url, session, auth):
     except Exception:
         pass
 
-    # ルート2: Jina AI Reader (クローリングプロキシ) 経由
+    # ルート2: Jina AI Reader
     try:
         jina_url = f"https://r.jina.ai/{url}"
         res = requests.get(jina_url, timeout=12)
@@ -114,7 +110,7 @@ def scrape_page(url, session, auth):
     except Exception:
         pass
 
-    # ルート3: AllOrigins (CORS/公開プロキシ) 経由
+    # ルート3: AllOrigins
     try:
         proxy_url = f"https://api.allorigins.win/raw?url={requests.utils.quote(url)}"
         res = requests.get(proxy_url, timeout=12)
@@ -130,26 +126,40 @@ def scrape_page(url, session, auth):
 
     return "取得失敗", "全ルート接続失敗（サーバー側で海外IP遮断中の可能性）"
 
-def generate_meta(model, url, title, body, company):
-    try:
-        time.sleep(0.2)
-        prompt = f"""SEOプロとして、以下の内容から120〜145文字の日本語meta descriptionを作成してください。
-        ・社名は「{company}」で統一。
-        ・最後は句点「。」で完結。
-        ・本文のみ出力し、注釈やカウントは含めない。
-        URL: {url} / タイトル: {title} / 内容: {body}"""
-        response = model.generate_content(prompt)
-        text = response.text.strip()
-        return re.sub(r'[\(（].*?文字[\)）]', '', text).strip()
-    except Exception as e:
-        return f"AI生成エラー: {str(e)}"
+def generate_meta_with_retry(model, url, title, body, company, max_retries=3):
+    """429レート制限時に自動待機してリトライする生成関数"""
+    prompt = f"""SEOプロとして、以下の内容から120〜145文字の日本語meta descriptionを作成してください。
+・社名は「{company}」で統一。
+・最後は句点「。」で完結。
+・本文のみ出力し、注釈やカウントは含めない。
+URL: {url} / タイトル: {title} / 内容: {body}"""
+
+    for attempt in range(max_retries):
+        try:
+            response = model.generate_content(prompt)
+            text = response.text.strip()
+            return re.sub(r'[\(（].*?文字[\)）]', '', text).strip()
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str:
+                # 429レート制限にかかった場合、指定秒数または15秒待機して再試行
+                wait_time = 16
+                match = re.search(r'seconds:\s*(\d+)', err_str)
+                if match:
+                    wait_time = int(match.group(1)) + 2
+                time.sleep(wait_time)
+            elif attempt == max_retries - 1:
+                return f"AI生成エラー: {err_str}"
+            else:
+                time.sleep(3)
+    return "AI生成エラー: レート制限の待機回数を超過しました。"
 
 # --- 3. メインアプリ実行 ---
 
 if login_check():
     apply_custom_css()
     st.title("🚀 プロ仕様 SEO Meta Generator")
-    st.caption("Auto Model Selection Active / ログイン済み")
+    st.caption("Rate-Limit Optimized Mode / ログイン済み")
 
     with st.sidebar:
         st.header("⚙️ 設定")
@@ -190,7 +200,7 @@ if login_check():
                 auth = HTTPBasicAuth(b_user, b_pw) if b_user and b_pw else None
                 results = []
                 
-                with st.status("SEO解析および並列生成を実行中...", expanded=True) as status:
+                with st.status("SEO解析および生成を実行中...", expanded=True) as status:
                     session = create_robust_session()
                     
                     final_company = target_company
@@ -202,6 +212,7 @@ if login_check():
                                 res_name = model.generate_content(f"以下から正式社名のみ抽出せよ：{t} {b}")
                                 final_company = res_name.text.strip()
                                 st.write(f"✅ 社名を「{final_company}」に決定しました。")
+                                time.sleep(3)  # 社名判定直後のレート制限回避待機
                             except:
                                 final_company = "貴社"
                         else:
@@ -210,23 +221,25 @@ if login_check():
                     st.write("🚀 各ページのディスクリプションを生成中...")
                     progress_bar = st.progress(0)
                     
-                    def process_task(url):
+                    # 無料枠の5 RPM制限を守るため、順次実行＋自動リトライ
+                    for i, url in enumerate(urls):
                         try:
                             t, b = scrape_page(url, session, auth)
                             if t == "取得失敗":
-                                return {"URL": url, "タイトル": t, "結果": b, "文字数": 0}
-                            desc = generate_meta(model, url, t, b, final_company)
-                            return {"URL": url, "タイトル": t, "結果": desc, "文字数": len(desc)}
+                                res = {"URL": url, "タイトル": t, "結果": b, "文字数": 0}
+                            else:
+                                desc = generate_meta_with_retry(model, url, t, b, final_company)
+                                res = {"URL": url, "タイトル": t, "結果": desc, "文字数": len(desc)}
                         except Exception as e:
-                            return {"URL": url, "タイトル": "処理エラー", "結果": str(e), "文字数": 0}
+                            res = {"URL": url, "タイトル": "処理エラー", "結果": str(e), "文字数": 0}
 
-                    with ThreadPoolExecutor(max_workers=2) as executor:
-                        future_to_url = {executor.submit(process_task, url): url for url in urls}
-                        for i, future in enumerate(as_completed(future_to_url)):
-                            res = future.result()
-                            results.append(res)
-                            progress_bar.progress((i + 1) / len(urls))
-                            st.write(f"完了 ({i+1}/{len(urls)}): {res['URL']}")
+                        results.append(res)
+                        progress_bar.progress((i + 1) / len(urls))
+                        st.write(f"完了 ({i+1}/{len(urls)}): {url}")
+                        
+                        # 複数件ある場合、無料枠リミット（5回/分）に引っかからないよう待機
+                        if i < len(urls) - 1:
+                            time.sleep(12)
                 
                 status.update(label="✨ すべての処理が完了しました！", state="complete", expanded=False)
 
